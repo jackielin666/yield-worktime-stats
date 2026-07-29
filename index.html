@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>產品製成率及工時統計系統</title>
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/chart.umd.min.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --accent: #2a78d6;
+  --accent-soft: rgba(42,120,214,0.10);
+  --good: #0ca30c;
+  --critical: #d03b3b;
+  --band: rgba(12,163,12,0.08);
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
+  --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --accent: #3987e5;
+    --accent-soft: rgba(57,135,229,0.14);
+    --band: rgba(12,163,12,0.10);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+    --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  background: var(--page);
+  color: var(--text-primary);
+  line-height: 1.55;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 60px; }
+header.app { margin-bottom: 18px; }
+header.app h1 { font-size: 22px; font-weight: 700; }
+header.app p { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+
+/* upload */
+#drop-zone {
+  border: 2px dashed var(--axis);
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+#drop-zone:hover, #drop-zone.drag { border-color: var(--accent); background: var(--accent-soft); }
+#drop-zone .big { font-size: 17px; font-weight: 600; }
+#drop-zone .small { color: var(--text-muted); font-size: 13px; margin-top: 6px; }
+#file-input { display: none; }
+
+/* parse summary */
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin-top: 10px; }
+.stat { background: var(--page); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
+.stat .k { font-size: 12px; color: var(--text-muted); }
+.stat .v { font-size: 16px; font-weight: 650; margin-top: 2px; }
+.stat .v small { font-size: 12px; font-weight: 400; color: var(--text-secondary); }
+.rules { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
+.reupload { float: right; }
+
+button {
+  font: inherit; font-size: 13px;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+button:hover { background: var(--accent-soft); }
+button.primary, button.on {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+.seg { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; padding: 6px 14px; }
+.seg button + button { border-left: 1px solid var(--border); }
+
+/* product picker */
+.picker-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
+.picker-head h2, .section-title { font-size: 15px; font-weight: 700; }
+#prod-search {
+  font: inherit; font-size: 13px; padding: 6px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--page); color: var(--text-primary);
+  width: 240px;
+}
+#prod-list {
+  max-height: 240px; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 2px 12px; padding: 4px 2px;
+}
+.prod-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; padding: 4px 6px; border-radius: 6px; cursor: pointer;
+}
+.prod-item:hover { background: var(--accent-soft); }
+.prod-item input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
+.prod-item .code { font-weight: 650; flex: none; }
+.prod-item .name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prod-item .cnt { color: var(--text-muted); font-size: 11px; margin-left: auto; flex: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 3px 10px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--page);
+}
+.chip .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.chip b { font-weight: 650; }
+.chip .x { cursor: pointer; color: var(--text-muted); padding: 0 2px; }
+.chip .x:hover { color: var(--critical); }
+
+/* toolbar */
+.toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.toolbar .lbl { font-size: 13px; color: var(--text-secondary); }
+
+/* charts */
+.chart-card h3 { font-size: 15px; font-weight: 700; }
+.chart-card .sub { font-size: 12px; color: var(--text-muted); }
+.chart-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.chart-box { position: relative; height: 300px; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+.legend-row .li { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.sw.line { height: 0; border-top: 2px dashed var(--text-muted); border-radius: 0; width: 18px; }
+.sw.solidline { height: 0; border-top: 2px solid var(--text-muted); border-radius: 0; width: 18px; }
+.kpis { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 12px; }
+.kpi { background: var(--page); border: 1px solid var(--border); border-radius: 10px; padding: 8px 14px; min-width: 130px; }
+.kpi .k { font-size: 11px; color: var(--text-muted); }
+.kpi .v { font-size: 17px; font-weight: 650; }
+.kpi .v small { font-size: 11px; font-weight: 400; color: var(--text-secondary); }
+.kpi .d { font-size: 11px; }
+.kpi .d.up { color: var(--critical); }
+.kpi .d.down { color: var(--good); }
+
+table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 10px; }
+.mtable th, .mtable td { border: 1px solid var(--grid); padding: 4px 8px; text-align: right; font-variant-numeric: tabular-nums; }
+.mtable th:first-child, .mtable td:first-child { text-align: left; }
+.mtable th { background: var(--page); color: var(--text-secondary); font-weight: 600; }
+.mtable td.bad { color: var(--critical); font-weight: 650; }
+.mtable-wrap { overflow-x: auto; }
+
+.note { font-size: 12px; color: var(--text-muted); }
+.hidden { display: none !important; }
+
+@media print {
+  #upload-card, .picker-card, .toolbar-card, .no-print { display: none !important; }
+  body { background: #fff; }
+  .card { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="app">
+    <h1>產品製成率及工時統計系統</h1>
+    <p>上傳最新的生產資料 Excel 檔，於瀏覽器本機解析，不會上傳到任何伺服器。</p>
+  </header>
+
+  <!-- upload -->
+  <div class="card" id="upload-card">
+    <div id="drop-zone">
+      <div class="big">點擊選取或拖曳 xlsx 檔案至此</div>
+      <div class="small">需含「資料總表」與「工時」分頁（另可含 112年全品項生產鍋數／生產達成率(目標)）</div>
+    </div>
+    <input type="file" id="file-input" accept=".xlsx,.xlsm,.xls">
+  </div>
+
+  <!-- parse summary -->
+  <div class="card hidden" id="summary-card">
+    <button class="reupload no-print" onclick="resetAll()">重新上傳</button>
+    <div class="section-title">資料解析摘要</div>
+    <div class="summary-grid" id="summary-grid"></div>
+    <div class="rules" id="summary-rules"></div>
+  </div>
+
+  <!-- product picker -->
+  <div class="card picker-card hidden" id="picker-card">
+    <div class="picker-head">
+      <h2>選擇產品（可複選比較）</h2>
+      <input type="text" id="prod-search" placeholder="搜尋料號或品名…">
+      <span class="note" id="pick-count"></span>
+      <button onclick="clearSelection()" id="clear-btn" class="hidden">全部取消</button>
+    </div>
+    <div id="prod-list"></div>
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <!-- year toolbar -->
+  <div class="card toolbar-card hidden" id="toolbar-card">
+    <div class="toolbar">
+      <span class="lbl">年份</span>
+      <div class="seg" id="year-seg"></div>
+      <span class="note">月度圖 X 軸固定 1–12 月；未生產或不足月的月份留空。</span>
+      <button class="no-print" style="margin-left:auto" onclick="window.print()">列印報表</button>
+    </div>
+  </div>
+
+  <!-- overview comparison -->
+  <div class="card chart-card hidden" id="overview-card">
+    <div class="chart-head">
+      <div>
+        <h3>多產品比較</h3>
+        <div class="sub" id="overview-sub"></div>
+      </div>
+      <div class="seg" id="overview-metric-seg"></div>
+    </div>
+    <div class="chart-box"><canvas id="overview-canvas"></canvas></div>
+    <div class="legend-row" id="overview-legend"></div>
+  </div>
+
+  <!-- per-product cards -->
+  <div id="cards"></div>
+
+  <footer class="note" style="margin-top:30px">
+    資料來源：上傳之生產資料檔｜統計規則：月度僅計「足月」資料（資料起訖落在月中的月份與進行中的當月不計）；
+    已排除專案列、無實際生產數據列與未來排程列。｜分析日期：<span id="today"></span>
+  </footer>
+</div>
+
+<script>
+'use strict';
+document.getElementById('today').textContent = new Date().toLocaleDateString('zh-TW');
+
+/* ================= 全域狀態 ================= */
+const state = {
+  workAgg: new Map(),   // "code|y|m" -> {total, man, pots, n}
+  yieldAgg: new Map(),  // "code|y|m" -> {est, act, n}
+  products: new Map(),  // code -> {code, name, workN, yieldN}
+  workRange: null,      // {min:{y,m,d}, max:{y,m,d}}
+  yieldRange: null,
+  years: [],
+  year: null,
+  selected: [],         // [{code, slot}]
+  charts: {},           // id -> Chart instance
+};
+const SLOT_VARS = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'];
+const NON_PRODUCT_CODES = new Set(['專案', '研發', '-']);
+const MAX_SELECT = 8;
+const MONTH_LABELS = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function withAlpha(hex, a) {
+  const h = hex.replace('#','');
+  const r = parseInt(h.slice(0,2),16), g = parseInt(h.slice(2,4),16), b = parseInt(h.slice(4,6),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/* ================= 日期解析 ================= */
+function excelSerialToYMD(serial) {
+  const ms = Math.round(serial) * 86400000 + Date.UTC(1899, 11, 30);
+  const d = new Date(ms);
+  return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() };
+}
+function ymdKey(o) { return o.y * 10000 + o.m * 100 + o.d; }
+function validYMD(y, m, d) {
+  if (m < 1 || m > 12 || d < 1) return false;
+  return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+/** 逐列解析日期欄：支援 Excel 序號、'YYYY/M/D' 完整字串、'M/D' 無年份字串。
+ *  無年份字串以前後最近的絕對日期為錨點推斷年份（資料須為時間順序，跨年自動 +1）。 */
+function parseDateColumn(raw) {
+  const n = raw.length;
+  const abs = new Array(n).fill(null);
+  const rel = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const v = raw[i];
+    if (v == null) continue;
+    if (typeof v === 'number') {
+      if (v > 20000 && v < 80000) abs[i] = excelSerialToYMD(v);
+      continue;
+    }
+    if (typeof v !== 'string') continue;
+    const s = v.trim().replace(/[.\-年月]/g, '/').replace(/日/g, '');
+    const parts = s.split('/').map(p => p.trim()).filter(p => p !== '');
+    const nums = parts.map(p => parseInt(p, 10));
+    if (nums.some(isNaN)) continue;
+    if (nums.length === 3) {
+      let [y, m, d] = nums;
+      if (y < 1000) y += 1911; // 民國年
+      if (validYMD(y, m, d)) abs[i] = { y, m, d };
+    } else if (nums.length === 2) {
+      rel[i] = { m: nums[0], d: nums[1] };
+    }
+  }
+  // 向前掃：錨點之後的無年份日期
+  let last = null;
+  for (let i = 0; i < n; i++) {
+    if (abs[i]) { last = abs[i]; continue; }
+    if (rel[i] && last) {
+      for (const y of [last.y, last.y + 1]) {
+        if (!validYMD(y, rel[i].m, rel[i].d)) continue;
+        const c = { y, m: rel[i].m, d: rel[i].d };
+        if (ymdKey(c) >= ymdKey(last)) { abs[i] = c; last = c; break; }
+      }
+    }
+  }
+  // 向後掃：第一個錨點之前的無年份日期
+  let next = null;
+  for (let i = n - 1; i >= 0; i--) {
+    if (abs[i]) { next = abs[i]; continue; }
+    if (rel[i] && next) {
+      for (const y of [next.y, next.y - 1]) {
+        if (!validYMD(y, rel[i].m, rel[i].d)) continue;
+        const c = { y, m: rel[i].m, d: rel[i].d };
+        if (ymdKey(c) <= ymdKey(next)) { abs[i] = c; next = c; break; }
+      }
+    }
+  }
+  return abs;
+}
+
+/* ================= 工具 ================= */
+function toNum(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  if (typeof v === 'string') {
+    const s = v.trim().replace(/,/g, '');
+    if (s === '') return null;
+    const f = parseFloat(s);
+    return isNaN(f) ? null : f;
+  }
+  return null;
+}
+function normHeader(v) { return v == null ? '' : String(v).replace(/\s/g, ''); }
+function findCol(headers, includes, fallback) {
+  for (let i = 0; i < headers.length; i++) {
+    const h = normHeader(headers[i]);
+    if (h && includes.every(k => h.includes(k))) return i;
+  }
+  return fallback;
+}
+function monthDays(y, m) { return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
+function monthComplete(y, m, range) {
+  if (!range) return false;
+  const startK = y * 10000 + m * 100 + 1;
+  const endK = y * 10000 + m * 100 + monthDays(y, m);
+  return startK >= ymdKey(range.min) && endK <= ymdKey(range.max);
+}
+function fmt(v, dec) {
+  if (v == null || !isFinite(v)) return '–';
+  return v.toLocaleString('zh-TW', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+function fmtDate(o) { return `${o.y}/${o.m}/${o.d}`; }
+
+/* ================= 檔案解析 ================= */
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('drag');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => { if (e.target.files.length) handleFile(e.target.files[0]); });
+
+function handleFile(file) {
+  if (!/\.(xlsx|xlsm|xls)$/i.test(file.name)) { alert('請選擇 .xlsx / .xlsm 檔案'); return; }
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array', cellDates: false });
+      parseWorkbook(wb, file.name);
+    } catch (err) {
+      alert('檔案解析失敗：' + err.message);
+      console.error(err);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function findSheet(wb, name) {
+  if (wb.Sheets[name]) return wb.Sheets[name];
+  const hit = wb.SheetNames.find(n => n.replace(/\s/g, '').includes(name));
+  return hit ? wb.Sheets[hit] : null;
+}
+
+function parseWorkbook(wb, filename) {
+  const wsWork = findSheet(wb, '工時');
+  const wsMain = findSheet(wb, '資料總表');
+  if (!wsWork || !wsMain) {
+    alert('找不到「工時」或「資料總表」分頁，請確認檔案格式。\n偵測到的分頁：' + wb.SheetNames.join('、'));
+    return;
+  }
+  // reset state
+  state.workAgg = new Map(); state.yieldAgg = new Map(); state.products = new Map();
+  state.selected = []; state.workRange = null; state.yieldRange = null;
+
+  /* ---- 工時 ---- */
+  const wRows = XLSX.utils.sheet_to_json(wsWork, { header: 1, defval: null, raw: true });
+  const wh = wRows[0] || [];
+  const wc = {
+    date: findCol(wh, ['日期'], 0),
+    code: findCol(wh, ['料號'], 1),
+    name: findCol(wh, ['品項'], 2),
+    pots: findCol(wh, ['鍋數'], 3),
+    man:  findCol(wh, ['生產時間', '人數'], 14),
+    total: findCol(wh, ['總生產時間'], 17),
+  };
+  const wBody = wRows.slice(1);
+  const wDates = parseDateColumn(wBody.map(r => r[wc.date]));
+  let workValid = 0, workSkipped = 0;
+  let wMin = null, wMax = null;
+  const workRecords = [];
+  for (let i = 0; i < wBody.length; i++) {
+    const r = wBody[i];
+    const isEmpty = r.every(v => v == null || v === '');
+    if (isEmpty) continue;
+    const d = wDates[i];
+    const code = typeof r[wc.code] === 'string' ? r[wc.code].trim() : (r[wc.code] != null ? String(r[wc.code]) : '');
+    const name = typeof r[wc.name] === 'string' ? r[wc.name].trim() : '';
+    const pots = toNum(r[wc.pots]);
+    const total = toNum(r[wc.total]);
+    const man = toNum(r[wc.man]);
+    const headerLike = normHeader(r[wc.code]) === '料號';
+    if (headerLike) continue;
+    if (!d || !code || NON_PRODUCT_CODES.has(code) || name === '#N/A' || pots == null || pots <= 0 || total == null || total <= 0) {
+      workSkipped++; continue;
+    }
+    workValid++;
+    workRecords.push({ d, code, name, pots, total, man: man || 0 });
+    if (!wMin || ymdKey(d) < ymdKey(wMin)) wMin = d;
+    if (!wMax || ymdKey(d) > ymdKey(wMax)) wMax = d;
+  }
+  state.workRange = wMin ? { min: wMin, max: wMax } : null;
+
+  /* ---- 資料總表（製成率） ---- */
+  const yRows = XLSX.utils.sheet_to_json(wsMain, { header: 1, defval: null, raw: true });
+  const yh = yRows[0] || [];
+  const yc = {
+    date: findCol(yh, ['日期'], 0),
+    code: findCol(yh, ['料號'], 1),
+    name: findCol(yh, ['品項'], 2),
+    pots: findCol(yh, ['鍋數'], 3),
+    est:  findCol(yh, ['半成品數', '預估'], 6),
+    act:  findCol(yh, ['半成品數', '實際'], 7),
+  };
+  const yBody = yRows.slice(1);
+  const yDates = parseDateColumn(yBody.map(r => r[yc.date]));
+  let yieldValid = 0, yieldSkipped = 0;
+  let yMin = null, yMax = null;
+  const yieldRecords = [];
+  for (let i = 0; i < yBody.length; i++) {
+    const r = yBody[i];
+    if (r.every(v => v == null || v === '')) continue;
+    const d = yDates[i];
+    const code = typeof r[yc.code] === 'string' ? r[yc.code].trim() : (r[yc.code] != null ? String(r[yc.code]) : '');
+    const name = typeof r[yc.name] === 'string' ? r[yc.name].trim() : '';
+    const est = toNum(r[yc.est]);
+    const act = toNum(r[yc.act]);
+    if (normHeader(r[yc.code]) === '料號') continue;
+    if (!d || !code || NON_PRODUCT_CODES.has(code) || est == null || est <= 0 || act == null || act <= 0) {
+      yieldSkipped++; continue;
+    }
+    yieldValid++;
+    yieldRecords.push({ d, code, name, est, act });
+    if (!yMin || ymdKey(d) < ymdKey(yMin)) yMin = d;
+    if (!yMax || ymdKey(d) > ymdKey(yMax)) yMax = d;
+  }
+  state.yieldRange = yMin ? { min: yMin, max: yMax } : null;
+
+  /* ---- 彙總 ---- */
+  for (const rec of workRecords) {
+    const k = `${rec.code}|${rec.d.y}|${rec.d.m}`;
+    let a = state.workAgg.get(k);
+    if (!a) { a = { total: 0, man: 0, pots: 0, n: 0 }; state.workAgg.set(k, a); }
+    a.total += rec.total; a.man += rec.man; a.pots += rec.pots; a.n++;
+    let p = state.products.get(rec.code);
+    if (!p) { p = { code: rec.code, name: rec.name, workN: 0, yieldN: 0 }; state.products.set(rec.code, p); }
+    p.workN++;
+    if (!p.name && rec.name) p.name = rec.name;
+  }
+  for (const rec of yieldRecords) {
+    const k = `${rec.code}|${rec.d.y}|${rec.d.m}`;
+    let a = state.yieldAgg.get(k);
+    if (!a) { a = { est: 0, act: 0, n: 0 }; state.yieldAgg.set(k, a); }
+    a.est += rec.est; a.act += rec.act; a.n++;
+    let p = state.products.get(rec.code);
+    if (!p) { p = { code: rec.code, name: rec.name, workN: 0, yieldN: 0 }; state.products.set(rec.code, p); }
+    p.yieldN++;
+    if (!p.name && rec.name) p.name = rec.name;
+  }
+
+  /* ---- 年份 ---- */
+  const yearSet = new Set();
+  const ranges = [state.workRange, state.yieldRange].filter(Boolean);
+  for (const rg of ranges) {
+    for (let y = rg.min.y; y <= rg.max.y; y++) {
+      for (let m = 1; m <= 12; m++) if (monthComplete(y, m, rg)) { yearSet.add(y); break; }
+    }
+  }
+  state.years = [...yearSet].sort();
+  state.year = state.years[state.years.length - 1] || null;
+
+  renderSummary(filename, { workValid, workSkipped, yieldValid, yieldSkipped });
+  document.getElementById('upload-card').classList.add('hidden');
+  document.getElementById('summary-card').classList.remove('hidden');
+  document.getElementById('picker-card').classList.remove('hidden');
+  document.getElementById('toolbar-card').classList.remove('hidden');
+  renderYearSeg();
+  renderProductList();
+  renderChips();
+  renderAll();
+}
+
+function completeMonthSpan(range) {
+  if (!range) return '—';
+  const list = [];
+  for (let y = range.min.y; y <= range.max.y; y++)
+    for (let m = 1; m <= 12; m++) if (monthComplete(y, m, range)) list.push(`${y}/${m}`);
+  if (!list.length) return '—';
+  return `${list[0]} ~ ${list[list.length - 1]}`;
+}
+
+function renderSummary(filename, s) {
+  const g = document.getElementById('summary-grid');
+  const wr = state.workRange, yr = state.yieldRange;
+  g.innerHTML = `
+    <div class="stat"><div class="k">檔案</div><div class="v" style="font-size:13px">${filename}</div></div>
+    <div class="stat"><div class="k">工時資料</div><div class="v">${s.workValid.toLocaleString()} 筆 <small>（排除 ${s.workSkipped} 筆）</small></div>
+      <div class="k">${wr ? fmtDate(wr.min) + ' ~ ' + fmtDate(wr.max) : '—'}</div></div>
+    <div class="stat"><div class="k">製成率資料（資料總表）</div><div class="v">${s.yieldValid.toLocaleString()} 筆 <small>（排除 ${s.yieldSkipped} 筆）</small></div>
+      <div class="k">${yr ? fmtDate(yr.min) + ' ~ ' + fmtDate(yr.max) : '—'}</div></div>
+    <div class="stat"><div class="k">產品數</div><div class="v">${state.products.size} 項</div></div>
+    <div class="stat"><div class="k">工時可計足月</div><div class="v" style="font-size:14px">${completeMonthSpan(wr)}</div></div>
+    <div class="stat"><div class="k">製成率可計足月</div><div class="v" style="font-size:14px">${completeMonthSpan(yr)}</div></div>`;
+  document.getElementById('summary-rules').textContent =
+    '排除規則：專案／研發／無料號列、無實際生產數據列（含未來排程）、總生產時間為 0 的列；月度統計僅計足月。';
+}
+
+function resetAll() {
+  for (const id in state.charts) { state.charts[id].destroy(); }
+  state.charts = {};
+  document.getElementById('cards').innerHTML = '';
+  document.getElementById('overview-card').classList.add('hidden');
+  document.getElementById('summary-card').classList.add('hidden');
+  document.getElementById('picker-card').classList.add('hidden');
+  document.getElementById('toolbar-card').classList.add('hidden');
+  document.getElementById('upload-card').classList.remove('hidden');
+  fileInput.value = '';
+}
+
+/* ================= 指標定義 ================= */
+const METRICS = [
+  { key: 'total',  label: '總生產時間', unit: '分', dec: 0, src: 'work',
+    calc: a => a.total },
+  { key: 'perpot', label: '每鍋工時', unit: '分/鍋', dec: 2, src: 'work',
+    calc: a => a.pots > 0 ? a.total / a.pots : null },
+  { key: 'manpot', label: '每鍋人時', unit: '人分/鍋', dec: 2, src: 'work',
+    calc: a => a.pots > 0 ? a.man / a.pots : null },
+  { key: 'rate',   label: '製成率', unit: '%', dec: 1, src: 'yield',
+    calc: a => a.est > 0 ? a.act / a.est * 100 : null },
+];
+function metricByKey(k) { return METRICS.find(m => m.key === k); }
+
+/** 某產品某年 12 個月的指標值（不足月 → null） */
+function monthlySeries(code, year, metric) {
+  const agg = metric.src === 'work' ? state.workAgg : state.yieldAgg;
+  const range = metric.src === 'work' ? state.workRange : state.yieldRange;
+  const out = [];
+  for (let m = 1; m <= 12; m++) {
+    if (!monthComplete(year, m, range)) { out.push(null); continue; }
+    const a = agg.get(`${code}|${year}|${m}`);
+    out.push(a ? metric.calc(a) : null);
+  }
+  return out;
+}
+
+/** 去年年度平均：total → 有生產足月的月平均；比例類 → 全年加總後相除（僅足月） */
+function baseline(code, year, metric) {
+  const py = year - 1;
+  const agg = metric.src === 'work' ? state.workAgg : state.yieldAgg;
+  const range = metric.src === 'work' ? state.workRange : state.yieldRange;
+  let total = 0, man = 0, pots = 0, est = 0, act = 0, months = 0;
+  for (let m = 1; m <= 12; m++) {
+    if (!monthComplete(py, m, range)) continue;
+    const a = agg.get(`${code}|${py}|${m}`);
+    if (!a) continue;
+    months++;
+    if (metric.src === 'work') { total += a.total; man += a.man; pots += a.pots; }
+    else { est += a.est; act += a.act; }
+  }
+  if (!months) return null;
+  let v = null;
+  if (metric.key === 'total') v = total / months;
+  else if (metric.key === 'perpot') v = pots > 0 ? total / pots : null;
+  else if (metric.key === 'manpot') v = pots > 0 ? man / pots : null;
+  else if (metric.key === 'rate') v = est > 0 ? act / est * 100 : null;
+  return v == null ? null : { value: v, months };
+}
+
+/* ================= 產品選擇 ================= */
+document.getElementById('prod-search').addEventListener('input', renderProductList);
+
+function sortedProducts() {
+  return [...state.products.values()].sort((a, b) => a.code.localeCompare(b.code, 'zh-Hant'));
+}
+function renderProductList() {
+  const q = document.getElementById('prod-search').value.trim().toLowerCase();
+  const list = document.getElementById('prod-list');
+  const sel = new Set(state.selected.map(s => s.code));
+  list.innerHTML = '';
+  for (const p of sortedProducts()) {
+    if (q && !p.code.toLowerCase().includes(q) && !(p.name || '').toLowerCase().includes(q)) continue;
+    const label = document.createElement('label');
+    label.className = 'prod-item';
+    label.innerHTML = `<input type="checkbox" ${sel.has(p.code) ? 'checked' : ''}>
+      <span class="code">${p.code}</span><span class="name">${p.name || ''}</span>
+      <span class="cnt">${p.workN + p.yieldN}筆</span>`;
+    label.querySelector('input').addEventListener('change', e => toggleProduct(p.code, e.target.checked));
+    list.appendChild(label);
+  }
+  updatePickCount();
+}
+function toggleProduct(code, on) {
+  if (on) {
+    if (state.selected.some(s => s.code === code)) return;
+    if (state.selected.length >= MAX_SELECT) {
+      alert(`最多同時比較 ${MAX_SELECT} 項產品`); renderProductList(); return;
+    }
+    const used = new Set(state.selected.map(s => s.slot));
+    let slot = 0; while (used.has(slot)) slot++;
+    state.selected.push({ code, slot });
+  } else {
+    state.selected = state.selected.filter(s => s.code !== code);
+  }
+  renderChips(); renderAll(); updatePickCount();
+}
+function clearSelection() {
+  state.selected = [];
+  renderProductList(); renderChips(); renderAll();
+}
+function updatePickCount() {
+  document.getElementById('pick-count').textContent =
+    state.selected.length ? `已選 ${state.selected.length}/${MAX_SELECT} 項` : `共 ${state.products.size} 項產品`;
+  document.getElementById('clear-btn').classList.toggle('hidden', !state.selected.length);
+}
+function renderChips() {
+  const c = document.getElementById('chips');
+  c.innerHTML = '';
+  for (const s of state.selected) {
+    const p = state.products.get(s.code);
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.innerHTML = `<span class="dot" style="background:${cssVar(SLOT_VARS[s.slot])}"></span>
+      <b>${s.code}</b> ${p && p.name ? p.name : ''} <span class="x" title="移除">✕</span>`;
+    chip.querySelector('.x').addEventListener('click', () => { toggleProduct(s.code, false); renderProductList(); });
+    c.appendChild(chip);
+  }
+}
+
+/* ================= 年份切換 ================= */
+function renderYearSeg() {
+  const seg = document.getElementById('year-seg');
+  seg.innerHTML = '';
+  for (const y of state.years) {
+    const b = document.createElement('button');
+    b.textContent = y + ' 年';
+    b.className = y === state.year ? 'on' : '';
+    b.addEventListener('click', () => { state.year = y; renderYearSeg(); renderAll(); });
+    seg.appendChild(b);
+  }
+}
+
+/* ================= Chart.js 共用 ================= */
+Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+Chart.defaults.font.size = 12;
+
+/** 水平參考線／合理帶 plugin（依 chart.options.plugins.refs 設定繪製） */
+const refPlugin = {
+  id: 'refs',
+  beforeDatasetsDraw(chart) {
+    const cfg = chart.options.plugins.refs;
+    if (!cfg) return;
+    const { ctx, chartArea: area, scales: { y } } = chart;
+    if (!area) return;
+    ctx.save();
+    if (cfg.band) {
+      const y1 = y.getPixelForValue(cfg.band.from), y2 = y.getPixelForValue(cfg.band.to);
+      ctx.fillStyle = cfg.band.color;
+      ctx.fillRect(area.left, Math.min(y1, y2), area.right - area.left, Math.abs(y1 - y2));
+    }
+    for (const ln of cfg.lines || []) {
+      if (ln.value == null || ln.value < y.min || ln.value > y.max) continue;
+      const py = y.getPixelForValue(ln.value);
+      ctx.strokeStyle = ln.color;
+      ctx.lineWidth = ln.width || 1.5;
+      ctx.setLineDash(ln.dash || []);
+      ctx.beginPath();
+      ctx.moveTo(area.left, py); ctx.lineTo(area.right, py); ctx.stroke();
+      ctx.setLineDash([]);
+      if (ln.label) {
+        ctx.fillStyle = ln.color;
+        ctx.font = '11px ' + Chart.defaults.font.family;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = ln.labelBelow ? 'top' : 'bottom';
+        ctx.fillText(ln.label, area.right - 4, ln.labelBelow ? py + 3 : py - 3);
+      }
+    }
+    ctx.restore();
+  }
+};
+Chart.register(refPlugin);
+
+function baseScales(unit) {
+  return {
+    x: { grid: { display: false }, border: { color: cssVar('--axis') },
+         ticks: { color: cssVar('--text-muted') } },
+    y: { grid: { color: cssVar('--grid') }, border: { display: false },
+         ticks: { color: cssVar('--text-muted') },
+         title: { display: !!unit, text: unit, color: cssVar('--text-muted'), font: { size: 11 } } }
+  };
+}
+function makeChart(id, cfg) {
+  if (state.charts[id]) { state.charts[id].destroy(); delete state.charts[id]; }
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const ch = new Chart(el, cfg);
+  state.charts[id] = ch;
+  return ch;
+}
+
+/* ================= 總覽比較圖 ================= */
+let overviewMetric = 'total';
+function renderOverviewSeg() {
+  const seg = document.getElementById('overview-metric-seg');
+  seg.innerHTML = '';
+  for (const m of METRICS) {
+    const b = document.createElement('button');
+    b.textContent = m.label;
+    b.className = m.key === overviewMetric ? 'on' : '';
+    b.addEventListener('click', () => { overviewMetric = m.key; renderOverview(); });
+    seg.appendChild(b);
+  }
+}
+function renderOverview() {
+  const card = document.getElementById('overview-card');
+  if (state.selected.length < 2 || !state.year) {
+    card.classList.add('hidden');
+    if (state.charts['overview-canvas']) { state.charts['overview-canvas'].destroy(); delete state.charts['overview-canvas']; }
+    return;
+  }
+  card.classList.remove('hidden');
+  renderOverviewSeg();
+  const metric = metricByKey(overviewMetric);
+  document.getElementById('overview-sub').textContent =
+    `${state.year} 年 · ${metric.label}（${metric.unit}）`;
+  const datasets = state.selected.map(s => {
+    const color = cssVar(SLOT_VARS[s.slot]);
+    return {
+      label: s.code,
+      data: monthlySeries(s.code, state.year, metric),
+      borderColor: color, backgroundColor: color,
+      borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
+      pointBorderColor: cssVar('--surface-1'), pointBorderWidth: 1,
+      spanGaps: false, tension: 0.15,
+    };
+  });
+  const refs = metric.key === 'rate'
+    ? { band: { from: 95, to: 105, color: cssVar('--band') },
+        lines: [{ value: 100, color: cssVar('--text-muted'), dash: [], width: 1, label: '目標 100%' }] }
+    : null;
+  makeChart('overview-canvas', {
+    type: 'line',
+    data: { labels: MONTH_LABELS, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        refs,
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const p = state.products.get(ctx.dataset.label);
+              return ` ${ctx.dataset.label} ${p && p.name ? p.name : ''}：${fmt(ctx.parsed.y, metric.dec)} ${metric.unit}`;
+            }
+          }
+        }
+      },
+      scales: baseScales(metric.unit),
+    }
+  });
+  const lg = document.getElementById('overview-legend');
+  lg.innerHTML = state.selected.map(s => {
+    const p = state.products.get(s.code);
+    return `<span class="li"><span class="sw" style="background:${cssVar(SLOT_VARS[s.slot])}"></span>${s.code} ${p && p.name ? p.name : ''}</span>`;
+  }).join('') + (metric.key === 'rate'
+    ? `<span class="li"><span class="sw" style="background:${cssVar('--band')};border:1px solid ${cssVar('--good')}"></span>合理範圍 95%~105%</span>`
+    : '');
+}
+
+/* ================= 產品卡片 ================= */
+const cardMetricSel = new Map();   // code -> metric key（工時卡片頁籤）
+const cardTableOn = new Map();     // code -> bool
+
+function renderCards() {
+  const wrap = document.getElementById('cards');
+  // 清掉已取消選取產品的圖
+  for (const id in state.charts) {
+    if (id.startsWith('cv-') || id.startsWith('cy-')) {
+      const code = id.slice(3);
+      if (!state.selected.some(s => s.code === code)) { state.charts[id].destroy(); delete state.charts[id]; }
+    }
+  }
+  wrap.innerHTML = '';
+  if (!state.year) return;
+  for (const s of state.selected) renderProductCard(wrap, s);
+}
+
+function renderProductCard(wrap, sel) {
+  const code = sel.code;
+  const p = state.products.get(code);
+  const color = cssVar(SLOT_VARS[sel.slot]);
+  const mkey = cardMetricSel.get(code) || 'total';
+  const metric = metricByKey(mkey);
+  const year = state.year;
+
+  const card = document.createElement('div');
+  card.className = 'card chart-card';
+  const cid = 'cv-' + code, yid = 'cy-' + code;
+  card.innerHTML = `
+    <div class="chart-head">
+      <div>
+        <h3><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${color};margin-right:6px"></span>${code}　${p && p.name ? p.name : ''}</h3>
+        <div class="sub">${year} 年月度統計（僅計足月）</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="seg" id="seg-${code}"></div>
+        <button id="tbl-btn-${code}">數據表</button>
+      </div>
+    </div>
+    <div class="kpis" id="kpi-${code}"></div>
+    <div class="chart-box"><canvas id="${cid}"></canvas></div>
+    <div class="legend-row" id="lg-${code}"></div>
+    <div style="margin-top:20px">
+      <div class="section-title" style="font-size:14px">製成率（生產達成率）</div>
+      <div class="chart-box" style="height:240px"><canvas id="${yid}"></canvas></div>
+      <div class="legend-row" id="lgy-${code}"></div>
+    </div>
+    <div class="mtable-wrap hidden" id="tblwrap-${code}"></div>`;
+  wrap.appendChild(card);
+
+  // 工時指標頁籤
+  const seg = card.querySelector(`#seg-${CSS.escape(code)}`);
+  for (const m of METRICS.filter(m => m.src === 'work')) {
+    const b = document.createElement('button');
+    b.textContent = m.label;
+    b.className = m.key === mkey ? 'on' : '';
+    b.addEventListener('click', () => { cardMetricSel.set(code, m.key); renderCards(); });
+    seg.appendChild(b);
+  }
+  card.querySelector(`#tbl-btn-${CSS.escape(code)}`).addEventListener('click', () => {
+    cardTableOn.set(code, !cardTableOn.get(code)); renderCards();
+  });
+
+  /* ---- 工時圖 ---- */
+  const data = monthlySeries(code, year, metric);
+  const bl = baseline(code, year, metric);
+  const above = color, below = withAlpha(color, 0.4);
+  const colors = data.map(v => (bl && v != null && v > bl.value) ? above : (bl ? below : above));
+  makeChart(cid, {
+    type: 'bar',
+    data: { labels: MONTH_LABELS, datasets: [{
+      data, backgroundColor: colors, borderRadius: 4, borderSkipped: false,
+      maxBarThickness: 46, categoryPercentage: 0.72,
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        refs: bl ? { lines: [{ value: bl.value, color: cssVar('--text-muted'), dash: [6, 4], width: 1.5,
+                               label: `去年平均 ${fmt(bl.value, metric.dec)}` }] } : null,
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const m = ctx.dataIndex + 1;
+              const a = state.workAgg.get(`${code}|${year}|${m}`);
+              const lines = [` ${metric.label}：${fmt(ctx.parsed.y, metric.dec)} ${metric.unit}`];
+              if (a) lines.push(` 鍋數：${fmt(a.pots, 0)}｜生產 ${a.n} 天`);
+              if (bl && ctx.parsed.y != null) {
+                const d = (ctx.parsed.y - bl.value) / bl.value * 100;
+                lines.push(` vs 去年平均：${d >= 0 ? '+' : ''}${fmt(d, 1)}%`);
+              }
+              return lines;
+            }
+          }
+        }
+      },
+      scales: baseScales(metric.unit),
+    }
+  });
+  const lg = card.querySelector(`#lg-${CSS.escape(code)}`);
+  lg.innerHTML = bl
+    ? `<span class="li"><span class="sw" style="background:${above}"></span>高於去年平均</span>
+       <span class="li"><span class="sw" style="background:${below}"></span>低於去年平均</span>
+       <span class="li"><span class="sw line"></span>去年平均（${year - 1} 年 ${bl.months} 個有生產足月）</span>`
+    : `<span class="li"><span class="sw" style="background:${above}"></span>${metric.label}</span>
+       <span class="li note">（${year - 1} 年無足月資料，無去年平均線）</span>`;
+
+  /* ---- KPI ---- */
+  renderKpis(card.querySelector(`#kpi-${CSS.escape(code)}`), code, year);
+
+  /* ---- 製成率圖 ---- */
+  const rateMetric = metricByKey('rate');
+  const rdata = monthlySeries(code, year, rateMetric);
+  const rbl = baseline(code, year, rateMetric);
+  const ptColors = rdata.map(v => v != null && (v < 95 || v > 105) ? cssVar('--critical') : color);
+  const ptRadius = rdata.map(v => v != null && (v < 95 || v > 105) ? 6 : 4);
+  const vals = rdata.filter(v => v != null);
+  const ymin = Math.min(90, ...(vals.length ? [Math.floor(Math.min(...vals) - 2)] : [90]));
+  const ymax = Math.max(110, ...(vals.length ? [Math.ceil(Math.max(...vals) + 2)] : [110]));
+  makeChart(yid, {
+    type: 'line',
+    data: { labels: MONTH_LABELS, datasets: [{
+      data: rdata, borderColor: color, backgroundColor: ptColors,
+      pointBackgroundColor: ptColors, pointBorderColor: cssVar('--surface-1'), pointBorderWidth: 1,
+      pointRadius: ptRadius, pointHoverRadius: 7,
+      borderWidth: 2, spanGaps: false, tension: 0.15,
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        refs: {
+          band: { from: 95, to: 105, color: cssVar('--band') },
+          lines: [
+            { value: 100, color: cssVar('--text-muted'), dash: [], width: 1, label: '目標 100%', labelBelow: true },
+            ...(rbl ? [{ value: rbl.value, color: cssVar('--text-muted'), dash: [6, 4], width: 1.5,
+                         label: `去年平均 ${fmt(rbl.value, 1)}%` }] : []),
+          ]
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const m = ctx.dataIndex + 1;
+              const a = state.yieldAgg.get(`${code}|${year}|${m}`);
+              const lines = [` 製成率：${fmt(ctx.parsed.y, 2)}%`];
+              if (a) lines.push(` 實際 ${fmt(a.act, 0)}／預估 ${fmt(a.est, 0)}｜${a.n} 批`);
+              if (ctx.parsed.y != null && (ctx.parsed.y < 95 || ctx.parsed.y > 105))
+                lines.push(' ⚠ 超出合理範圍 (95%~105%)');
+              return lines;
+            }
+          }
+        }
+      },
+      scales: { ...baseScales('%'), y: { ...baseScales('%').y, min: ymin, max: ymax } },
+    }
+  });
+  const outCnt = rdata.filter(v => v != null && (v < 95 || v > 105)).length;
+  card.querySelector(`#lgy-${CSS.escape(code)}`).innerHTML =
+    `<span class="li"><span class="sw" style="background:${cssVar('--band')};border:1px solid ${cssVar('--good')}"></span>合理範圍 95%~105%</span>
+     <span class="li"><span class="sw solidline"></span>目標 100%</span>
+     ${rbl ? `<span class="li"><span class="sw line"></span>去年平均</span>` : ''}
+     <span class="li"><span class="sw" style="background:${cssVar('--critical')};border-radius:50%"></span>超出範圍月份${outCnt ? `（${outCnt} 個月）` : '（無）'}</span>`;
+
+  /* ---- 數據表 ---- */
+  const tw = card.querySelector(`#tblwrap-${CSS.escape(code)}`);
+  if (cardTableOn.get(code)) {
+    tw.classList.remove('hidden');
+    tw.innerHTML = buildTable(code, year);
+  }
+}
+
+function renderKpis(el, code, year) {
+  let total = 0, man = 0, pots = 0, days = 0, est = 0, act = 0, batches = 0;
+  for (let m = 1; m <= 12; m++) {
+    const a = state.workAgg.get(`${code}|${year}|${m}`);
+    if (a && monthComplete(year, m, state.workRange)) { total += a.total; man += a.man; pots += a.pots; days += a.n; }
+    const b = state.yieldAgg.get(`${code}|${year}|${m}`);
+    if (b && monthComplete(year, m, state.yieldRange)) { est += b.est; act += b.act; batches += b.n; }
+  }
+  const kpis = [
+    { k: `${year} 年總生產時間`, v: fmt(total, 0), u: '分', extra: `≈ ${fmt(total / 60, 1)} 小時` },
+    { k: '總鍋數', v: fmt(pots, 0), u: '鍋', extra: `${days} 個生產日` },
+    { k: '每鍋工時', v: pots > 0 ? fmt(total / pots, 2) : '–', u: '分/鍋' },
+    { k: '每鍋人時', v: pots > 0 ? fmt(man / pots, 2) : '–', u: '人分/鍋' },
+    { k: '年度製成率', v: est > 0 ? fmt(act / est * 100, 2) : '–', u: '%', extra: `${batches} 批` },
+  ];
+  el.innerHTML = kpis.map(x =>
+    `<div class="kpi"><div class="k">${x.k}</div><div class="v">${x.v} <small>${x.u}</small></div>${x.extra ? `<div class="k">${x.extra}</div>` : ''}</div>`
+  ).join('');
+}
+
+function buildTable(code, year) {
+  const bls = {};
+  for (const m of METRICS) bls[m.key] = baseline(code, year, m);
+  let rows = '';
+  for (let mm = 1; mm <= 12; mm++) {
+    const wOK = monthComplete(year, mm, state.workRange);
+    const yOK = monthComplete(year, mm, state.yieldRange);
+    const a = wOK ? state.workAgg.get(`${code}|${year}|${mm}`) : null;
+    const b = yOK ? state.yieldAgg.get(`${code}|${year}|${mm}`) : null;
+    const rate = b && b.est > 0 ? b.act / b.est * 100 : null;
+    rows += `<tr>
+      <td>${mm} 月${(!wOK && !yOK) ? '（不足月）' : ''}</td>
+      <td>${a ? fmt(a.total, 0) : '–'}</td>
+      <td>${a && a.pots > 0 ? fmt(a.total / a.pots, 2) : '–'}</td>
+      <td>${a && a.pots > 0 ? fmt(a.man / a.pots, 2) : '–'}</td>
+      <td>${a ? fmt(a.pots, 0) : '–'}</td>
+      <td class="${rate != null && (rate < 95 || rate > 105) ? 'bad' : ''}">${rate != null ? fmt(rate, 2) + '%' : '–'}</td>
+      <td>${b ? b.n : '–'}</td>
+    </tr>`;
+  }
+  const blRow = `<tr>
+    <th>去年平均</th>
+    <th>${bls.total ? fmt(bls.total.value, 0) : '–'}</th>
+    <th>${bls.perpot ? fmt(bls.perpot.value, 2) : '–'}</th>
+    <th>${bls.manpot ? fmt(bls.manpot.value, 2) : '–'}</th>
+    <th>–</th>
+    <th>${bls.rate ? fmt(bls.rate.value, 2) + '%' : '–'}</th>
+    <th>–</th>
+  </tr>`;
+  return `<table class="mtable">
+    <thead><tr><th>${year} 年</th><th>總生產時間(分)</th><th>每鍋工時(分/鍋)</th><th>每鍋人時(人分/鍋)</th><th>鍋數</th><th>製成率</th><th>批數</th></tr></thead>
+    <tbody>${rows}${blRow}</tbody></table>`;
+}
+
+/* ================= 總 render ================= */
+function renderAll() {
+  renderOverview();
+  renderCards();
+}
+
+/* 深淺色模式切換時重繪 */
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (state.products.size) { renderYearSeg(); renderChips(); renderAll(); }
+  });
+}
+</script>
+</body>
+</html>
