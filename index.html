@@ -196,6 +196,8 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
     <div class="picker-head">
       <h2>選擇產品（可複選比較）</h2>
       <input type="text" id="prod-search" placeholder="搜尋料號或品名…">
+      <span class="lbl" style="font-size:13px;color:var(--text-secondary)">排序</span>
+      <div class="seg" id="sort-seg"></div>
       <span class="note" id="pick-count"></span>
       <button onclick="clearSelection()" id="clear-btn" class="hidden">全部取消</button>
     </div>
@@ -249,6 +251,7 @@ const state = {
   years: [],
   year: null,
   selected: [],         // [{code, slot}]
+  sort: { key: 'code', dir: 'asc' },  // 料號/筆數，升冪/降冪
   charts: {},           // id -> Chart instance
 };
 const SLOT_VARS = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'];
@@ -516,6 +519,7 @@ function parseWorkbook(wb, filename) {
   document.getElementById('picker-card').classList.remove('hidden');
   document.getElementById('toolbar-card').classList.remove('hidden');
   renderYearSeg();
+  renderSortControl();
   renderProductList();
   renderChips();
   renderAll();
@@ -611,7 +615,37 @@ function baseline(code, year, metric) {
 document.getElementById('prod-search').addEventListener('input', renderProductList);
 
 function sortedProducts() {
-  return [...state.products.values()].sort((a, b) => a.code.localeCompare(b.code, 'zh-Hant'));
+  const { key, dir } = state.sort;
+  const mul = dir === 'asc' ? 1 : -1;
+  return [...state.products.values()].sort((a, b) => {
+    let r;
+    if (key === 'count') {
+      r = (a.workN + a.yieldN) - (b.workN + b.yieldN);
+      if (r === 0) r = a.code.localeCompare(b.code, 'zh-Hant', { numeric: true });
+    } else {
+      r = a.code.localeCompare(b.code, 'zh-Hant', { numeric: true });
+    }
+    return r * mul;
+  });
+}
+function setSort(key) {
+  if (state.sort.key === key) {
+    state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    state.sort.key = key;
+    state.sort.dir = 'asc';
+  }
+  renderSortControl();
+  renderProductList();
+}
+function renderSortControl() {
+  const el = document.getElementById('sort-seg');
+  if (!el) return;
+  const { key, dir } = state.sort;
+  const arrow = d => d === 'asc' ? ' ▲' : ' ▼';
+  el.innerHTML = `
+    <button class="${key === 'code' ? 'on' : ''}" onclick="setSort('code')">料號${key === 'code' ? arrow(dir) : ''}</button>
+    <button class="${key === 'count' ? 'on' : ''}" onclick="setSort('count')">筆數${key === 'count' ? arrow(dir) : ''}</button>`;
 }
 function renderProductList() {
   const q = document.getElementById('prod-search').value.trim().toLowerCase();
