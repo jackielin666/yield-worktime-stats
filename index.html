@@ -172,6 +172,15 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
 #cost-anom #anom-toggle { font-size: 12px; padding: 4px 10px; color: var(--critical); }
 .cost-anom-list { margin-top: 8px; }
 .mtable td.mut { color: var(--text-muted); }
+.cost-tbl { table-layout: fixed; }
+.cost-tbl th, .cost-tbl td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cost-tbl th.lft { text-align: left; }
+.cost-tbl col.c-code { width: 74px; }
+.cost-tbl col.c-name { width: auto; }
+.cost-tbl col.c-hr   { width: 86px; }
+.cost-tbl col.c-cost { width: 104px; }
+.cost-tbl col.c-diff { width: 78px; }
+.cost-tbl td:nth-child(2) { white-space: normal; }
 .hidden { display: none !important; }
 
 @media print {
@@ -403,14 +412,21 @@ function timeToMin(v) {
   return null;
 }
 const LUNCH_FROM = 12 * 60, LUNCH_TO = 13 * 60;   // 午休 12:00–13:00 一律扣除
-/** 單段工時(分)：(結束−開始) − 午休重疊 + 前置作業。回傳 {status:'ok'|'absent'|'error', min} */
-function stageMin(startMin, endMin, prepMin) {
-  if (startMin == null && endMin == null) return { status: 'absent' };
-  if (startMin == null || endMin == null || endMin <= startMin) return { status: 'error' };
+/** 判定單段作業狀態：
+ *  empty = 完全空白（時間與人數皆無）→ 非人工列；
+ *  bad   = 有填但不完整/異常（缺時間、缺人數、結束≤開始）→ 資料不全；
+ *  ok    = 時間與人數皆齊全，min 為工時(分)=(結束−開始)−午休+前置。 */
+function classifyStage(startMin, endMin, prepMin, people) {
+  const hasTime = startMin != null || endMin != null;
+  const hasPeople = people != null && people > 0;
+  if (!hasTime && !hasPeople) return { kind: 'empty', why: '未填資料' };
+  if (startMin == null || endMin == null || endMin <= startMin) return { kind: 'bad', why: '缺／異常生產時間' };
+  if (!hasPeople) return { kind: 'bad', why: '缺人數' };
   let d = endMin - startMin;
   d -= Math.max(0, Math.min(endMin, LUNCH_TO) - Math.max(startMin, LUNCH_FROM));
   d += (prepMin || 0);
-  return d > 0 ? { status: 'ok', min: d } : { status: 'error' };
+  if (d <= 0) return { kind: 'bad', why: '生產時間為 0' };
+  return { kind: 'ok', why: '', min: d, people };
 }
 function monthDays(y, m) { return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
 function monthComplete(y, m, range) {
@@ -523,25 +539,28 @@ function parseWorkbook(wb, filename) {
     if (!code || NON_PRODUCT_CODES.has(code) || name === '#N/A') continue;
     const pots = toNum(r[wc.pots]);
     const E = toNum(r[cc.e1]), J = toNum(r[cc.e2]);
-    const s1 = stageMin(timeToMin(r[cc.g1]), timeToMin(r[cc.h1]), timeToMin(r[cc.prep1]));
-    const s2 = stageMin(timeToMin(r[cc.g2]), timeToMin(r[cc.h2]), timeToMin(r[cc.prep2]));
+    const st1 = classifyStage(timeToMin(r[cc.g1]), timeToMin(r[cc.h1]), timeToMin(r[cc.prep1]), E);
+    const st2 = classifyStage(timeToMin(r[cc.g2]), timeToMin(r[cc.h2]), timeToMin(r[cc.prep2]), J);
     const oVal = toNum(r[cc.o]);
-    const have1 = s1.status === 'ok' && E != null && E > 0;
-    const have2 = s2.status === 'ok' && J != null && J > 0;
-    // 兩段皆無人工資料 → 非成本列，略過（不報錯）
-    if (s1.status === 'absent' && s2.status === 'absent') continue;
-    // 判斷異常原因
+    // 兩段皆完全空白 → 非人工列，略過（不報錯）
+    if (st1.kind === 'empty' && st2.kind === 'empty') continue;
+    // 判斷異常原因（兩段都必須完整才計算）
     let reason = null;
-    const computed = (have1 ? s1.min * E : 0) + (have2 ? s2.min * J : 0);
-    if (s1.status === 'error' || s2.status === 'error') reason = '生產時間異常（結束早於開始／時間無效）';
-    else if ((s1.status === 'ok' && (E == null || E <= 0)) || (s2.status === 'ok' && (J == null || J <= 0)))
-      reason = '有生產時間但缺人數';
-    else if (!d) reason = '日期無效';
-    else if (pots == null || pots <= 0) reason = '缺鍋數';
-    else if (oVal == null) reason = '缺「生產時間*人數」欄，無法核對';
-    else if (Math.abs(computed - oVal) > 1) reason = `自算人時 ${Math.round(computed)} ≠ 表列 ${fmt(oVal, 0)}（記錄可能有誤）`;
+    let computed = null;
+    if (st1.kind !== 'ok' || st2.kind !== 'ok') {
+      const parts = [];
+      if (st1.kind !== 'ok') parts.push('第一段(製造)' + st1.why);
+      if (st2.kind !== 'ok') parts.push('第二段(充填)' + st2.why);
+      reason = '資料不全：' + parts.join('、');
+    } else {
+      computed = st1.min * st1.people + st2.min * st2.people;
+      if (!d) reason = '日期無效';
+      else if (pots == null || pots <= 0) reason = '缺鍋數';
+      else if (oVal == null) reason = '缺「生產時間*人數」欄，無法核對';
+      else if (Math.abs(computed - oVal) > 1) reason = `自算人時 ${Math.round(computed)} ≠ 表列 ${fmt(oVal, 0)}（記錄可能有誤）`;
+    }
     if (reason) {
-      state.costAnoms.push({ date: d ? fmtDate(d) : '—', code, name, computed: Math.round(computed), oVal, reason });
+      state.costAnoms.push({ date: d ? fmtDate(d) : '—', code, name, computed: computed != null ? Math.round(computed) : null, oVal, reason });
       continue;
     }
     // 通過核對 → 納入
@@ -1248,10 +1267,14 @@ function renderCost() {
   if (!body) body = `<tr><td colspan="8" class="mut" style="text-align:center;padding:16px">無符合的產品成本資料</td></tr>`;
 
   document.getElementById('cost-table').innerHTML = `
-    <table class="mtable">
+    <table class="mtable cost-tbl">
+      <colgroup>
+        <col class="c-code"><col class="c-name">
+        <col class="c-hr"><col class="c-cost"><col class="c-hr"><col class="c-cost"><col class="c-diff">
+      </colgroup>
       <thead>
         <tr>
-          <th rowspan="2">料號</th><th rowspan="2" style="text-align:left">品名</th>
+          <th rowspan="2">料號</th><th rowspan="2" class="lft">品名</th>
           <th colspan="2">${COST_PERIODS[0].label}</th>
           <th colspan="2">${COST_PERIODS[1].label}</th>
           <th rowspan="2">每鍋成本<br>變化</th>
