@@ -175,11 +175,12 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
 .cost-tbl { table-layout: fixed; }
 .cost-tbl th, .cost-tbl td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cost-tbl th.lft { text-align: left; }
-.cost-tbl col.c-code { width: 74px; }
-.cost-tbl col.c-name { width: auto; }
-.cost-tbl col.c-hr   { width: 86px; }
-.cost-tbl col.c-cost { width: 104px; }
-.cost-tbl col.c-diff { width: 78px; }
+.cost-tbl col.c-code  { width: 70px; }
+.cost-tbl col.c-name  { width: auto; }
+.cost-tbl col.c-hr    { width: 78px; }
+.cost-tbl col.c-cost  { width: 96px; }
+.cost-tbl col.c-batch { width: 62px; }
+.cost-tbl col.c-diff  { width: 80px; }
 .cost-tbl td:nth-child(2) { white-space: normal; }
 .hidden { display: none !important; }
 
@@ -700,17 +701,18 @@ const METRICS = [
     calc: a => a.total },
   { key: 'perpot', label: '每鍋工時', unit: '分/鍋', dec: 2, src: 'work',
     calc: a => a.pots > 0 ? a.total / a.pots : null },
-  { key: 'manpot', label: '每鍋人時', unit: '人分/鍋', dec: 2, src: 'work',
-    calc: a => a.pots > 0 ? a.man / a.pots : null },
+  { key: 'manpot', label: '每鍋人時', unit: '人時/鍋', dec: 2, src: 'cost',
+    calc: a => a.pots > 0 ? (a.personMin / 60) / a.pots : null },
   { key: 'rate',   label: '製成率', unit: '%', dec: 1, src: 'yield',
     calc: a => a.est > 0 ? a.act / a.est * 100 : null },
 ];
 function metricByKey(k) { return METRICS.find(m => m.key === k); }
+function aggFor(src) { return src === 'work' ? state.workAgg : src === 'cost' ? state.costAgg : state.yieldAgg; }
+function rangeFor(src) { return src === 'work' ? state.workRange : src === 'cost' ? state.costRange : state.yieldRange; }
 
 /** 某產品某年 12 個月的指標值（不足月 → null） */
 function monthlySeries(code, year, metric) {
-  const agg = metric.src === 'work' ? state.workAgg : state.yieldAgg;
-  const range = metric.src === 'work' ? state.workRange : state.yieldRange;
+  const agg = aggFor(metric.src), range = rangeFor(metric.src);
   const out = [];
   for (let m = 1; m <= 12; m++) {
     if (!monthComplete(year, m, range)) { out.push(null); continue; }
@@ -723,22 +725,22 @@ function monthlySeries(code, year, metric) {
 /** 去年年度平均：total → 有生產足月的月平均；比例類 → 全年加總後相除（僅足月） */
 function baseline(code, year, metric) {
   const py = year - 1;
-  const agg = metric.src === 'work' ? state.workAgg : state.yieldAgg;
-  const range = metric.src === 'work' ? state.workRange : state.yieldRange;
-  let total = 0, man = 0, pots = 0, est = 0, act = 0, months = 0;
+  const agg = aggFor(metric.src), range = rangeFor(metric.src);
+  let total = 0, personMin = 0, pots = 0, est = 0, act = 0, months = 0;
   for (let m = 1; m <= 12; m++) {
     if (!monthComplete(py, m, range)) continue;
     const a = agg.get(`${code}|${py}|${m}`);
     if (!a) continue;
     months++;
-    if (metric.src === 'work') { total += a.total; man += a.man; pots += a.pots; }
+    if (metric.src === 'work') { total += a.total; pots += a.pots; }
+    else if (metric.src === 'cost') { personMin += a.personMin; pots += a.pots; }
     else { est += a.est; act += a.act; }
   }
   if (!months) return null;
   let v = null;
   if (metric.key === 'total') v = total / months;
   else if (metric.key === 'perpot') v = pots > 0 ? total / pots : null;
-  else if (metric.key === 'manpot') v = pots > 0 ? man / pots : null;
+  else if (metric.key === 'manpot') v = pots > 0 ? (personMin / 60) / pots : null;
   else if (metric.key === 'rate') v = est > 0 ? act / est * 100 : null;
   return v == null ? null : { value: v, months };
 }
@@ -1061,9 +1063,9 @@ function renderProductCard(wrap, sel) {
           callbacks: {
             label: ctx => {
               const m = ctx.dataIndex + 1;
-              const a = state.workAgg.get(`${code}|${year}|${m}`);
+              const a = aggFor(metric.src).get(`${code}|${year}|${m}`);
               const lines = [` ${metric.label}：${fmt(ctx.parsed.y, metric.dec)} ${metric.unit}`];
-              if (a) lines.push(` 鍋數：${fmt(a.pots, 0)}｜生產 ${a.n} 天`);
+              if (a) lines.push(` 鍋數：${fmt(a.pots, 0)}｜生產 ${a.n} ${metric.src === 'cost' ? '場' : '天'}`);
               if (bl && ctx.parsed.y != null) {
                 const d = (ctx.parsed.y - bl.value) / bl.value * 100;
                 lines.push(` vs 去年平均：${d >= 0 ? '+' : ''}${fmt(d, 1)}%`);
@@ -1149,18 +1151,22 @@ function renderProductCard(wrap, sel) {
 }
 
 function renderKpis(el, code, year) {
-  let total = 0, man = 0, pots = 0, days = 0, est = 0, act = 0, batches = 0;
+  let total = 0, pots = 0, days = 0, est = 0, act = 0, batches = 0;
+  let cPersonMin = 0, cPots = 0, cSessions = 0;
   for (let m = 1; m <= 12; m++) {
     const a = state.workAgg.get(`${code}|${year}|${m}`);
-    if (a && monthComplete(year, m, state.workRange)) { total += a.total; man += a.man; pots += a.pots; days += a.n; }
+    if (a && monthComplete(year, m, state.workRange)) { total += a.total; pots += a.pots; days += a.n; }
+    const c = state.costAgg.get(`${code}|${year}|${m}`);
+    if (c && monthComplete(year, m, state.costRange)) { cPersonMin += c.personMin; cPots += c.pots; cSessions += c.n; }
     const b = state.yieldAgg.get(`${code}|${year}|${m}`);
     if (b && monthComplete(year, m, state.yieldRange)) { est += b.est; act += b.act; batches += b.n; }
   }
+  const manHrPerPot = cPots > 0 ? (cPersonMin / 60) / cPots : null;
   const kpis = [
-    { k: `${year} 年總生產時間`, v: fmt(total, 0), u: '分', extra: `≈ ${fmt(total / 60, 1)} 小時` },
+    { k: `${year} 年總生產時間`, v: fmt(total, 0), u: '分', extra: `≈ ${fmt(total / 60, 1)} 小時（墻鐘趨勢）` },
     { k: '總鍋數', v: fmt(pots, 0), u: '鍋', extra: `${days} 個生產日` },
-    { k: '每鍋工時', v: pots > 0 ? fmt(total / pots, 2) : '–', u: '分/鍋' },
-    { k: '每鍋人時', v: pots > 0 ? fmt(man / pots, 2) : '–', u: '人分/鍋' },
+    { k: '每鍋工時', v: pots > 0 ? fmt(total / pots, 2) : '–', u: '分/鍋', extra: '墻鐘·趨勢' },
+    { k: '每鍋人時', v: manHrPerPot != null ? fmt(manHrPerPot, 2) : '–', u: '人時/鍋', extra: `成本基準·${cSessions} 場` },
     { k: '年度製成率', v: est > 0 ? fmt(act / est * 100, 2) : '–', u: '%', extra: `${batches} 批` },
   ];
   el.innerHTML = kpis.map(x =>
@@ -1175,14 +1181,17 @@ function buildTable(code, year) {
   for (let mm = 1; mm <= 12; mm++) {
     const wOK = monthComplete(year, mm, state.workRange);
     const yOK = monthComplete(year, mm, state.yieldRange);
+    const cOK = monthComplete(year, mm, state.costRange);
     const a = wOK ? state.workAgg.get(`${code}|${year}|${mm}`) : null;
+    const c = cOK ? state.costAgg.get(`${code}|${year}|${mm}`) : null;
     const b = yOK ? state.yieldAgg.get(`${code}|${year}|${mm}`) : null;
     const rate = b && b.est > 0 ? b.act / b.est * 100 : null;
+    const manHr = c && c.pots > 0 ? (c.personMin / 60) / c.pots : null;
     rows += `<tr>
       <td>${mm} 月${(!wOK && !yOK) ? '（不足月）' : ''}</td>
       <td>${a ? fmt(a.total, 0) : '–'}</td>
       <td>${a && a.pots > 0 ? fmt(a.total / a.pots, 2) : '–'}</td>
-      <td>${a && a.pots > 0 ? fmt(a.man / a.pots, 2) : '–'}</td>
+      <td>${manHr != null ? fmt(manHr, 2) : '–'}</td>
       <td>${a ? fmt(a.pots, 0) : '–'}</td>
       <td class="${rate != null && (rate < 95 || rate > 105) ? 'bad' : ''}">${rate != null ? fmt(rate, 2) + '%' : '–'}</td>
       <td>${b ? b.n : '–'}</td>
@@ -1198,7 +1207,7 @@ function buildTable(code, year) {
     <th>–</th>
   </tr>`;
   return `<table class="mtable">
-    <thead><tr><th>${year} 年</th><th>總生產時間(分)</th><th>每鍋工時(分/鍋)</th><th>每鍋人時(人分/鍋)</th><th>鍋數</th><th>製成率</th><th>批數</th></tr></thead>
+    <thead><tr><th>${year} 年</th><th>總生產時間(分)</th><th>每鍋工時(分/鍋)</th><th>每鍋人時(人時/鍋)</th><th>鍋數</th><th>製成率</th><th>批數</th></tr></thead>
     <tbody>${rows}${blRow}</tbody></table>`;
 }
 
@@ -1209,17 +1218,18 @@ const COST_PERIODS = [
 ];
 let costAnomOpen = false;
 
-/** 某產品某期間：加權平均每鍋人時（人時/鍋）。僅計足月。 */
+/** 某產品某期間：加權平均每鍋人時（人時/鍋）＋批量資訊。僅計足月。 */
 function costBaseline(code, p) {
-  let personMin = 0, pots = 0, months = 0;
+  let personMin = 0, pots = 0, sessions = 0, months = 0;
   for (let m = p.from; m <= p.to; m++) {
     if (!monthComplete(p.year, m, state.costRange)) continue;
     const a = state.costAgg.get(`${code}|${p.year}|${m}`);
     if (!a) continue;
-    personMin += a.personMin; pots += a.pots; months++;
+    personMin += a.personMin; pots += a.pots; sessions += a.n; months++;
   }
   if (!months || pots <= 0) return null;
-  return { manHrPerPot: (personMin / 60) / pots, pots, months };
+  return { manHrPerPot: (personMin / 60) / pots, pots, sessions, months,
+           batch: sessions > 0 ? pots / sessions : null };
 }
 
 function currentRate() {
@@ -1239,7 +1249,8 @@ function renderCost() {
   });
   document.getElementById('cost-sub').innerHTML =
     `每鍋人力成本 = (自算總人時 ÷ 60 ÷ 總鍋數) × 費率　·　午休 12:00–13:00 已扣、前置作業已計入　·　` +
-    `納入 ${state.costValid.toLocaleString()} 筆、排除異常 ${state.costAnoms.length.toLocaleString()} 筆　·　${avail.join('　')}`;
+    `納入 ${state.costValid.toLocaleString()} 筆、排除異常 ${state.costAnoms.length.toLocaleString()} 筆　·　${avail.join('　')}<br>` +
+    `「批量」= 平均每場鍋數（滑鼠移上看總鍋數/場次）；鍋數越多每鍋人時越低。兩期批量差異大時，成本變化會標 ⚠，提醒該差異可能來自批量而非效率。`;
 
   // 資料列
   const rows = [];
@@ -1253,35 +1264,43 @@ function renderCost() {
   let body = '';
   for (const { pr, bls } of rows) {
     const cells = bls.map(b => {
-      if (!b) return `<td class="mut">–</td><td class="mut">–</td>`;
+      if (!b) return `<td class="mut">–</td><td class="mut">–</td><td class="mut">–</td>`;
       const cost = b.manHrPerPot * rate;
-      return `<td>${fmt(b.manHrPerPot, 3)}</td><td><b>${fmt(cost, 1)}</b></td>`;
+      const bt = b.batch != null
+        ? `<td class="mut" title="總鍋數 ${fmt(b.pots, 0)}／${b.sessions} 場">${fmt(b.batch, 1)}</td>`
+        : `<td class="mut">–</td>`;
+      return `<td>${fmt(b.manHrPerPot, 3)}</td><td><b>${fmt(cost, 1)}</b></td>${bt}`;
     }).join('');
     let diff = '<td class="mut">–</td>';
     if (bls[0] && bls[1]) {
       const d = (bls[1].manHrPerPot - bls[0].manHrPerPot) / bls[0].manHrPerPot * 100;
-      diff = `<td class="${d > 0 ? 'bad' : ''}">${d >= 0 ? '+' : ''}${fmt(d, 1)}%</td>`;
+      const bd = (bls[0].batch && bls[1].batch) ? (bls[1].batch - bls[0].batch) / bls[0].batch : 0;
+      const warn = Math.abs(bd) > 0.3;
+      const tip = warn ? ` title="批量差異大：${fmt(bls[0].batch, 1)} → ${fmt(bls[1].batch, 1)} 鍋/場，此成本變化可能來自批量、非純效率"` : '';
+      diff = `<td class="${d > 0 ? 'bad' : ''}"${tip}>${d >= 0 ? '+' : ''}${fmt(d, 1)}%${warn ? ' ⚠' : ''}</td>`;
     }
     body += `<tr><td>${pr.code}</td><td style="text-align:left">${pr.name || ''}</td>${cells}${diff}</tr>`;
   }
-  if (!body) body = `<tr><td colspan="8" class="mut" style="text-align:center;padding:16px">無符合的產品成本資料</td></tr>`;
+  if (!body) body = `<tr><td colspan="9" class="mut" style="text-align:center;padding:16px">無符合的產品成本資料</td></tr>`;
 
   document.getElementById('cost-table').innerHTML = `
     <table class="mtable cost-tbl">
       <colgroup>
         <col class="c-code"><col class="c-name">
-        <col class="c-hr"><col class="c-cost"><col class="c-hr"><col class="c-cost"><col class="c-diff">
+        <col class="c-hr"><col class="c-cost"><col class="c-batch">
+        <col class="c-hr"><col class="c-cost"><col class="c-batch">
+        <col class="c-diff">
       </colgroup>
       <thead>
         <tr>
           <th rowspan="2">料號</th><th rowspan="2" class="lft">品名</th>
-          <th colspan="2">${COST_PERIODS[0].label}</th>
-          <th colspan="2">${COST_PERIODS[1].label}</th>
+          <th colspan="3">${COST_PERIODS[0].label}</th>
+          <th colspan="3">${COST_PERIODS[1].label}</th>
           <th rowspan="2">每鍋成本<br>變化</th>
         </tr>
         <tr>
-          <th>每鍋人時</th><th>每鍋成本($)</th>
-          <th>每鍋人時</th><th>每鍋成本($)</th>
+          <th>每鍋人時</th><th>每鍋成本($)</th><th>批量<br>鍋/場</th>
+          <th>每鍋人時</th><th>每鍋成本($)</th><th>批量<br>鍋/場</th>
         </tr>
       </thead>
       <tbody>${body}</tbody>
