@@ -158,6 +158,20 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
 .mtable-wrap { overflow-x: auto; }
 
 .note { font-size: 12px; color: var(--text-muted); }
+.cost-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 12px; margin-bottom: 10px; }
+.cost-head #cost-sub { margin-top: 4px; max-width: 720px; line-height: 1.5; }
+.cost-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.cost-controls label { display: inline-flex; align-items: center; color: var(--text-secondary); }
+#cost-rate { width: 78px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--surface-2); color: var(--text-primary); font-size: 13px; font-variant-numeric: tabular-nums; }
+#cost-rate:focus { outline: none; border-color: var(--accent); background: var(--surface-1); }
+#cost-search { padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); color: var(--text-primary); font-size: 13px; min-width: 200px; }
+#cost-search:focus { outline: none; border-color: var(--accent); background: var(--surface-1); }
+#cost-anom { margin-bottom: 8px; }
+#cost-anom #anom-toggle { font-size: 12px; padding: 4px 10px; color: var(--critical); }
+.cost-anom-list { margin-top: 8px; }
+.mtable td.mut { color: var(--text-muted); }
 .hidden { display: none !important; }
 
 @media print {
@@ -189,6 +203,22 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
     <div class="section-title">資料解析摘要</div>
     <div class="summary-grid" id="summary-grid"></div>
     <div class="rules" id="summary-rules"></div>
+  </div>
+
+  <!-- cost estimation -->
+  <div class="card hidden" id="cost-card">
+    <div class="cost-head">
+      <div>
+        <div class="section-title" style="margin:0">生產成本推估 · 每鍋人力成本</div>
+        <div class="note" id="cost-sub"></div>
+      </div>
+      <div class="cost-controls">
+        <label class="note">工時費率　<input type="number" id="cost-rate" value="200" min="0" step="10"> $/人時</label>
+        <input type="text" id="cost-search" placeholder="搜尋料號或品名…">
+      </div>
+    </div>
+    <div id="cost-anom" class="note"></div>
+    <div class="mtable-wrap" id="cost-table"></div>
   </div>
 
   <!-- product picker -->
@@ -245,6 +275,10 @@ document.getElementById('today').textContent = new Date().toLocaleDateString('zh
 const state = {
   workAgg: new Map(),   // "code|y|m" -> {total, man, pots, n}
   yieldAgg: new Map(),  // "code|y|m" -> {est, act, n}
+  costAgg: new Map(),   // "code|y|m" -> {personMin, pots, n}（自算人時，已通過核對）
+  costRange: null,      // 成本有效列的日期範圍
+  costAnoms: [],        // 異常列 [{date, code, name, computed, oVal, reason}]
+  costValid: 0,
   products: new Map(),  // code -> {code, name, workN, yieldN}
   workRange: null,      // {min:{y,m,d}, max:{y,m,d}}
   yieldRange: null,
@@ -350,6 +384,34 @@ function findCol(headers, includes, fallback) {
   }
   return fallback;
 }
+/** 時刻/時長儲存格 → 分鐘。支援 Excel 日內分數、'H:MM' 字串。 */
+function timeToMin(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') {
+    if (!isFinite(v)) return null;
+    const frac = v >= 1 ? v - Math.floor(v) : v;   // 取日內小數部分
+    return Math.round(frac * 1440);
+  }
+  if (typeof v === 'string') {
+    const s = v.trim();
+    const m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (m) return (+m[1]) * 60 + (+m[2]) + (m[3] ? Math.round(+m[3] / 60) : 0);
+    const f = parseFloat(s);
+    if (!isNaN(f) && f > 0 && f < 1) return Math.round(f * 1440);
+    return null;
+  }
+  return null;
+}
+const LUNCH_FROM = 12 * 60, LUNCH_TO = 13 * 60;   // 午休 12:00–13:00 一律扣除
+/** 單段工時(分)：(結束−開始) − 午休重疊 + 前置作業。回傳 {status:'ok'|'absent'|'error', min} */
+function stageMin(startMin, endMin, prepMin) {
+  if (startMin == null && endMin == null) return { status: 'absent' };
+  if (startMin == null || endMin == null || endMin <= startMin) return { status: 'error' };
+  let d = endMin - startMin;
+  d -= Math.max(0, Math.min(endMin, LUNCH_TO) - Math.max(startMin, LUNCH_FROM));
+  d += (prepMin || 0);
+  return d > 0 ? { status: 'ok', min: d } : { status: 'error' };
+}
 function monthDays(y, m) { return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
 function monthComplete(y, m, range) {
   if (!range) return false;
@@ -406,6 +468,7 @@ function parseWorkbook(wb, filename) {
   // reset state
   state.workAgg = new Map(); state.yieldAgg = new Map(); state.products = new Map();
   state.selected = []; state.workRange = null; state.yieldRange = null;
+  state.costAgg = new Map(); state.costRange = null; state.costAnoms = []; state.costValid = 0;
 
   /* ---- 工時 ---- */
   const wRows = XLSX.utils.sheet_to_json(wsWork, { header: 1, defval: null, raw: true });
@@ -444,6 +507,53 @@ function parseWorkbook(wb, filename) {
     if (!wMax || ymdKey(d) > ymdKey(wMax)) wMax = d;
   }
   state.workRange = wMin ? { min: wMin, max: wMax } : null;
+
+  /* ---- 成本（每鍋人力成本）：系統自算人時，與 O 欄核對，不一致者列為異常剔除 ---- */
+  // 兩段作業欄位為固定版面：製造 E/F/G/H(idx4-7)、充填 J/K/L/M(idx9-12)、人時 O(生產時間*人數)
+  const cc = { e1: 4, prep1: 5, g1: 6, h1: 7, e2: 9, prep2: 10, g2: 11, h2: 12,
+               o: findCol(wh, ['生產時間', '人數'], 14) };
+  let cMin = null, cMax = null;
+  for (let i = 0; i < wBody.length; i++) {
+    const r = wBody[i];
+    if (r.every(v => v == null || v === '')) continue;
+    if (normHeader(r[wc.code]) === '料號') continue;
+    const d = wDates[i];
+    const code = typeof r[wc.code] === 'string' ? r[wc.code].trim() : (r[wc.code] != null ? String(r[wc.code]) : '');
+    const name = typeof r[wc.name] === 'string' ? r[wc.name].trim() : '';
+    if (!code || NON_PRODUCT_CODES.has(code) || name === '#N/A') continue;
+    const pots = toNum(r[wc.pots]);
+    const E = toNum(r[cc.e1]), J = toNum(r[cc.e2]);
+    const s1 = stageMin(timeToMin(r[cc.g1]), timeToMin(r[cc.h1]), timeToMin(r[cc.prep1]));
+    const s2 = stageMin(timeToMin(r[cc.g2]), timeToMin(r[cc.h2]), timeToMin(r[cc.prep2]));
+    const oVal = toNum(r[cc.o]);
+    const have1 = s1.status === 'ok' && E != null && E > 0;
+    const have2 = s2.status === 'ok' && J != null && J > 0;
+    // 兩段皆無人工資料 → 非成本列，略過（不報錯）
+    if (s1.status === 'absent' && s2.status === 'absent') continue;
+    // 判斷異常原因
+    let reason = null;
+    const computed = (have1 ? s1.min * E : 0) + (have2 ? s2.min * J : 0);
+    if (s1.status === 'error' || s2.status === 'error') reason = '生產時間異常（結束早於開始／時間無效）';
+    else if ((s1.status === 'ok' && (E == null || E <= 0)) || (s2.status === 'ok' && (J == null || J <= 0)))
+      reason = '有生產時間但缺人數';
+    else if (!d) reason = '日期無效';
+    else if (pots == null || pots <= 0) reason = '缺鍋數';
+    else if (oVal == null) reason = '缺「生產時間*人數」欄，無法核對';
+    else if (Math.abs(computed - oVal) > 1) reason = `自算人時 ${Math.round(computed)} ≠ 表列 ${fmt(oVal, 0)}（記錄可能有誤）`;
+    if (reason) {
+      state.costAnoms.push({ date: d ? fmtDate(d) : '—', code, name, computed: Math.round(computed), oVal, reason });
+      continue;
+    }
+    // 通過核對 → 納入
+    state.costValid++;
+    const k = `${code}|${d.y}|${d.m}`;
+    let a = state.costAgg.get(k);
+    if (!a) { a = { personMin: 0, pots: 0, n: 0 }; state.costAgg.set(k, a); }
+    a.personMin += computed; a.pots += pots; a.n++;
+    if (!cMin || ymdKey(d) < ymdKey(cMin)) cMin = d;
+    if (!cMax || ymdKey(d) > ymdKey(cMax)) cMax = d;
+  }
+  state.costRange = cMin ? { min: cMin, max: cMax } : null;
 
   /* ---- 資料總表（製成率） ---- */
   const yRows = XLSX.utils.sheet_to_json(wsMain, { header: 1, defval: null, raw: true });
@@ -516,10 +626,12 @@ function parseWorkbook(wb, filename) {
   renderSummary(filename, { workValid, workSkipped, yieldValid, yieldSkipped });
   document.getElementById('upload-card').classList.add('hidden');
   document.getElementById('summary-card').classList.remove('hidden');
+  document.getElementById('cost-card').classList.remove('hidden');
   document.getElementById('picker-card').classList.remove('hidden');
   document.getElementById('toolbar-card').classList.remove('hidden');
   renderYearSeg();
   renderSortControl();
+  renderCost();
   renderProductList();
   renderChips();
   renderAll();
@@ -556,6 +668,7 @@ function resetAll() {
   document.getElementById('cards').innerHTML = '';
   document.getElementById('overview-card').classList.add('hidden');
   document.getElementById('summary-card').classList.add('hidden');
+  document.getElementById('cost-card').classList.add('hidden');
   document.getElementById('picker-card').classList.add('hidden');
   document.getElementById('toolbar-card').classList.add('hidden');
   document.getElementById('upload-card').classList.remove('hidden');
@@ -613,6 +726,8 @@ function baseline(code, year, metric) {
 
 /* ================= 產品選擇 ================= */
 document.getElementById('prod-search').addEventListener('input', renderProductList);
+document.getElementById('cost-rate').addEventListener('input', renderCost);
+document.getElementById('cost-search').addEventListener('input', renderCost);
 
 function sortedProducts() {
   const { key, dir } = state.sort;
@@ -1066,6 +1181,108 @@ function buildTable(code, year) {
   return `<table class="mtable">
     <thead><tr><th>${year} 年</th><th>總生產時間(分)</th><th>每鍋工時(分/鍋)</th><th>每鍋人時(人分/鍋)</th><th>鍋數</th><th>製成率</th><th>批數</th></tr></thead>
     <tbody>${rows}${blRow}</tbody></table>`;
+}
+
+/* ================= 成本推估 ================= */
+const COST_PERIODS = [
+  { key: 'y2025', label: '2025 全年', year: 2025, from: 1, to: 12 },
+  { key: 'h1_2026', label: '2026 上半年', year: 2026, from: 1, to: 6 },
+];
+let costAnomOpen = false;
+
+/** 某產品某期間：加權平均每鍋人時（人時/鍋）。僅計足月。 */
+function costBaseline(code, p) {
+  let personMin = 0, pots = 0, months = 0;
+  for (let m = p.from; m <= p.to; m++) {
+    if (!monthComplete(p.year, m, state.costRange)) continue;
+    const a = state.costAgg.get(`${code}|${p.year}|${m}`);
+    if (!a) continue;
+    personMin += a.personMin; pots += a.pots; months++;
+  }
+  if (!months || pots <= 0) return null;
+  return { manHrPerPot: (personMin / 60) / pots, pots, months };
+}
+
+function currentRate() {
+  const v = toNum(document.getElementById('cost-rate').value);
+  return v != null && v >= 0 ? v : 0;
+}
+
+function renderCost() {
+  const rate = currentRate();
+  const q = document.getElementById('cost-search').value.trim().toLowerCase();
+
+  // 期間可用性提示
+  const avail = COST_PERIODS.map(p => {
+    const ok = [];
+    for (let m = p.from; m <= p.to; m++) if (monthComplete(p.year, m, state.costRange)) ok.push(m);
+    return `${p.label}：${ok.length ? ok.length + ' 個足月' : '無足月資料'}`;
+  });
+  document.getElementById('cost-sub').innerHTML =
+    `每鍋人力成本 = (自算總人時 ÷ 60 ÷ 總鍋數) × 費率　·　午休 12:00–13:00 已扣、前置作業已計入　·　` +
+    `納入 ${state.costValid.toLocaleString()} 筆、排除異常 ${state.costAnoms.length.toLocaleString()} 筆　·　${avail.join('　')}`;
+
+  // 資料列
+  const rows = [];
+  for (const pr of sortedProducts()) {
+    if (q && !pr.code.toLowerCase().includes(q) && !(pr.name || '').toLowerCase().includes(q)) continue;
+    const bls = COST_PERIODS.map(p => costBaseline(pr.code, p));
+    if (bls.every(b => b == null)) continue;   // 無任何成本資料的產品不列
+    rows.push({ pr, bls });
+  }
+
+  let body = '';
+  for (const { pr, bls } of rows) {
+    const cells = bls.map(b => {
+      if (!b) return `<td class="mut">–</td><td class="mut">–</td>`;
+      const cost = b.manHrPerPot * rate;
+      return `<td>${fmt(b.manHrPerPot, 3)}</td><td><b>${fmt(cost, 1)}</b></td>`;
+    }).join('');
+    let diff = '<td class="mut">–</td>';
+    if (bls[0] && bls[1]) {
+      const d = (bls[1].manHrPerPot - bls[0].manHrPerPot) / bls[0].manHrPerPot * 100;
+      diff = `<td class="${d > 0 ? 'bad' : ''}">${d >= 0 ? '+' : ''}${fmt(d, 1)}%</td>`;
+    }
+    body += `<tr><td>${pr.code}</td><td style="text-align:left">${pr.name || ''}</td>${cells}${diff}</tr>`;
+  }
+  if (!body) body = `<tr><td colspan="8" class="mut" style="text-align:center;padding:16px">無符合的產品成本資料</td></tr>`;
+
+  document.getElementById('cost-table').innerHTML = `
+    <table class="mtable">
+      <thead>
+        <tr>
+          <th rowspan="2">料號</th><th rowspan="2" style="text-align:left">品名</th>
+          <th colspan="2">${COST_PERIODS[0].label}</th>
+          <th colspan="2">${COST_PERIODS[1].label}</th>
+          <th rowspan="2">每鍋成本<br>變化</th>
+        </tr>
+        <tr>
+          <th>每鍋人時</th><th>每鍋成本($)</th>
+          <th>每鍋人時</th><th>每鍋成本($)</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>`;
+
+  renderCostAnoms();
+}
+
+function renderCostAnoms() {
+  const el = document.getElementById('cost-anom');
+  const n = state.costAnoms.length;
+  if (!n) { el.innerHTML = '<span style="color:var(--good)">✓ 所有工時列均通過人時核對，無異常。</span>'; return; }
+  let html = `<button id="anom-toggle">${costAnomOpen ? '▼' : '▶'} 已排除 ${n} 筆異常資料（不列入計算，請於來源修正後重新上傳）</button>`;
+  if (costAnomOpen) {
+    const rows = state.costAnoms.slice(0, 300).map(a =>
+      `<tr><td>${a.date}</td><td>${a.code}</td><td style="text-align:left">${a.name || ''}</td><td style="text-align:left">${a.reason}</td></tr>`
+    ).join('');
+    html += `<div class="mtable-wrap cost-anom-list"><table class="mtable">
+      <thead><tr><th>日期</th><th>料號</th><th style="text-align:left">品名</th><th style="text-align:left">異常原因</th></tr></thead>
+      <tbody>${rows}</tbody></table>${n > 300 ? `<div class="note" style="margin-top:6px">僅顯示前 300 筆，共 ${n} 筆。</div>` : ''}</div>`;
+  }
+  el.innerHTML = html;
+  const btn = document.getElementById('anom-toggle');
+  if (btn) btn.addEventListener('click', () => { costAnomOpen = !costAnomOpen; renderCostAnoms(); });
 }
 
 /* ================= 總 render ================= */
