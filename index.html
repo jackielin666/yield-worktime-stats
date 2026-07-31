@@ -102,19 +102,47 @@ button.primary, button.on {
 }
 #prod-search:focus { outline: none; border-color: var(--accent); background: var(--surface-1); }
 #prod-list {
-  max-height: 240px; overflow-y: auto;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 2px 12px; padding: 4px 2px;
+  max-height: 460px; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+  gap: 10px; padding: 6px 2px;
 }
-.prod-item {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; padding: 4px 6px; border-radius: 6px; cursor: pointer;
+.pcard {
+  border: 1px solid var(--border-soft); border-radius: 12px;
+  background: var(--surface-2); padding: 10px 12px;
+  cursor: pointer; transition: border-color .12s, box-shadow .12s;
+  display: flex; flex-direction: column; gap: 6px;
 }
-.prod-item:hover { background: var(--accent-soft); }
-.prod-item input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
-.prod-item .code { font-weight: 650; flex: none; }
-.prod-item .name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prod-item .cnt { color: var(--text-muted); font-size: 11px; margin-left: auto; flex: none; }
+.pcard:hover { border-color: var(--accent); box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+.pcard.sel { border-color: var(--accent); background: var(--accent-soft); }
+.pcard .row1 { display: flex; align-items: center; gap: 7px; }
+.pcard .code { font-weight: 700; font-size: 14px; }
+.pcard .cnt { font-size: 11px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; }
+.pcard input { accent-color: var(--accent); width: 15px; height: 15px; margin-left: auto; flex: none; cursor: pointer; }
+.pcard .name { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard .badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.pbadge { font-size: 11px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.pbadge.ok   { color: var(--good, #2e7d32); background: rgba(46,125,50,0.1); }
+.pbadge.warn { color: var(--critical); background: rgba(214,69,60,0.1); }
+.pbadge.mut  { color: var(--text-muted); background: var(--surface-1); border: 1px solid var(--border-soft); }
+.pcard .costline { font-size: 12px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.pcard .costline .up { color: var(--critical); font-weight: 650; }
+.pcard .costline .down { color: var(--good, #2e7d32); font-weight: 650; }
+
+/* product detail */
+.detail-head { display: flex; align-items: flex-start; gap: 12px; }
+.detail-head h2 { font-size: 17px; font-weight: 750; }
+.detail-head .sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.detail-head .close { margin-left: auto; }
+.dkpis { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+.dtable-wrap { overflow-x: auto; max-height: 380px; overflow-y: auto; margin-top: 8px; }
+.dtable-wrap thead th { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+tr.anomrow td { background: rgba(214,69,60,0.06); color: var(--text-muted); }
+tr.anomrow td.reason { color: var(--critical); text-align: left; }
+.dcharts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+.dcharts .full { grid-column: 1 / -1; }
+@media (max-width: 900px) { .dcharts { grid-template-columns: 1fr; } }
+.dchart-title { font-size: 13px; font-weight: 650; margin-bottom: 6px; }
+.dchart-note { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px;
@@ -234,7 +262,7 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
   <!-- product picker -->
   <div class="card picker-card hidden" id="picker-card">
     <div class="picker-head">
-      <h2>選擇產品（可複選比較）</h2>
+      <h2>品項列表（點卡片看逐批詳情．勾選可多選比較）</h2>
       <input type="text" id="prod-search" placeholder="搜尋料號或品名…">
       <span class="lbl" style="font-size:13px;color:var(--text-secondary)">排序</span>
       <div class="seg" id="sort-seg"></div>
@@ -244,6 +272,9 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
     <div id="prod-list"></div>
     <div class="chips" id="chips"></div>
   </div>
+
+  <!-- product detail (single item deep-dive) -->
+  <div class="card hidden" id="detail-card"></div>
 
   <!-- year toolbar -->
   <div class="card toolbar-card hidden" id="toolbar-card">
@@ -286,8 +317,9 @@ const state = {
   workAgg: new Map(),   // "code|y|m" -> {total, man, pots, n}
   yieldAgg: new Map(),  // "code|y|m" -> {est, act, n}
   costAgg: new Map(),   // "code|y|m" -> {personMin, pots, n}（自算人時，已通過核對）
+  costRecords: [],      // 每場明細 [{d, code, pots, p1, m1, p2, m2, personMin}]
   costRange: null,      // 成本有效列的日期範圍
-  costAnoms: [],        // 異常列 [{date, code, name, computed, oVal, reason}]
+  costAnoms: [],        // 異常列 [{date, dkey, code, name, computed, oVal, reason}]
   costValid: 0,
   products: new Map(),  // code -> {code, name, workN, yieldN}
   workRange: null,      // {min:{y,m,d}, max:{y,m,d}}
@@ -486,6 +518,7 @@ function parseWorkbook(wb, filename) {
   state.workAgg = new Map(); state.yieldAgg = new Map(); state.products = new Map();
   state.selected = []; state.workRange = null; state.yieldRange = null;
   state.costAgg = new Map(); state.costRange = null; state.costAnoms = []; state.costValid = 0;
+  state.costRecords = [];
 
   /* ---- 工時 ---- */
   const wRows = XLSX.utils.sheet_to_json(wsWork, { header: 1, defval: null, raw: true });
@@ -561,11 +594,12 @@ function parseWorkbook(wb, filename) {
       else if (Math.abs(computed - oVal) > 1) reason = `自算人時 ${Math.round(computed)} ≠ 表列 ${fmt(oVal, 0)}（記錄可能有誤）`;
     }
     if (reason) {
-      state.costAnoms.push({ date: d ? fmtDate(d) : '—', code, name, computed: computed != null ? Math.round(computed) : null, oVal, reason });
+      state.costAnoms.push({ date: d ? fmtDate(d) : '—', dkey: d ? ymdKey(d) : 0, code, name, computed: computed != null ? Math.round(computed) : null, oVal, reason });
       continue;
     }
     // 通過核對 → 納入
     state.costValid++;
+    state.costRecords.push({ d, code, pots, p1: st1.people, m1: st1.min, p2: st2.people, m2: st2.min, personMin: computed });
     const k = `${code}|${d.y}|${d.m}`;
     let a = state.costAgg.get(k);
     if (!a) { a = { personMin: 0, pots: 0, n: 0 }; state.costAgg.set(k, a); }
@@ -649,6 +683,8 @@ function parseWorkbook(wb, filename) {
   document.getElementById('cost-card').classList.remove('hidden');
   document.getElementById('picker-card').classList.remove('hidden');
   document.getElementById('toolbar-card').classList.remove('hidden');
+  detailCode = null;
+  document.getElementById('detail-card').classList.add('hidden');
   renderYearSeg();
   renderSortControl();
   renderCost();
@@ -683,6 +719,8 @@ function renderSummary(filename, s) {
 }
 
 function resetAll() {
+  detailCode = null;
+  document.getElementById('detail-card').classList.add('hidden');
   for (const id in state.charts) { state.charts[id].destroy(); }
   state.charts = {};
   document.getElementById('cards').innerHTML = '';
@@ -747,7 +785,10 @@ function baseline(code, year, metric) {
 
 /* ================= 產品選擇 ================= */
 document.getElementById('prod-search').addEventListener('input', renderProductList);
-document.getElementById('cost-rate').addEventListener('input', renderCost);
+document.getElementById('cost-rate').addEventListener('input', () => {
+  renderCost(); renderProductList();
+  if (detailCode) renderDetail(detailCode);
+});
 document.getElementById('cost-search').addEventListener('input', renderCost);
 
 function sortedProducts() {
@@ -783,20 +824,80 @@ function renderSortControl() {
     <button class="${key === 'code' ? 'on' : ''}" onclick="setSort('code')">料號${key === 'code' ? arrow(dir) : ''}</button>
     <button class="${key === 'count' ? 'on' : ''}" onclick="setSort('count')">筆數${key === 'count' ? arrow(dir) : ''}</button>`;
 }
+/** 品項卡摘要：成本兩期基準、製成率超標月數 */
+function productCardSummary(code) {
+  const PERIODS = costPeriods();
+  const bls = PERIODS.map(p => costBaseline(code, p));
+  let rateMonths = 0, rateOut = 0;
+  for (const y of state.years) {
+    for (let m = 1; m <= 12; m++) {
+      if (!monthComplete(y, m, state.yieldRange)) continue;
+      const a = state.yieldAgg.get(`${code}|${y}|${m}`);
+      if (!a || a.est <= 0) continue;
+      rateMonths++;
+      const r = a.act / a.est * 100;
+      if (r < 95 || r > 105) rateOut++;
+    }
+  }
+  return { bls, PERIODS, rateMonths, rateOut };
+}
+
 function renderProductList() {
   const q = document.getElementById('prod-search').value.trim().toLowerCase();
   const list = document.getElementById('prod-list');
   const sel = new Set(state.selected.map(s => s.code));
+  const rate = currentRate();
   list.innerHTML = '';
   for (const p of sortedProducts()) {
     if (q && !p.code.toLowerCase().includes(q) && !(p.name || '').toLowerCase().includes(q)) continue;
-    const label = document.createElement('label');
-    label.className = 'prod-item';
-    label.innerHTML = `<input type="checkbox" ${sel.has(p.code) ? 'checked' : ''}>
-      <span class="code">${p.code}</span><span class="name">${p.name || ''}</span>
-      <span class="cnt">${p.workN + p.yieldN}筆</span>`;
-    label.querySelector('input').addEventListener('change', e => toggleProduct(p.code, e.target.checked));
-    list.appendChild(label);
+    const s = productCardSummary(p.code);
+    const card = document.createElement('div');
+    card.className = 'pcard' + (sel.has(p.code) ? ' sel' : '');
+
+    // 成本行：去年 → 今年
+    let costline;
+    const [b0, b1] = s.bls;
+    if (b0 && b1) {
+      const d = (b1.manHrPerPot - b0.manHrPerPot) / b0.manHrPerPot * 100;
+      const cls = d > 0 ? 'up' : 'down';
+      costline = `每鍋 $${fmt(b0.manHrPerPot * rate, 0)} → $${fmt(b1.manHrPerPot * rate, 0)}
+        <span class="${cls}">${d >= 0 ? '+' : ''}${fmt(d, 1)}%</span>`;
+    } else if (b0 || b1) {
+      const b = b0 || b1, pl = b0 ? s.PERIODS[0].label : s.PERIODS[1].label;
+      costline = `每鍋 $${fmt(b.manHrPerPot * rate, 0)}（${pl}）`;
+    } else {
+      costline = `<span style="color:var(--text-muted)">尚無可計成本資料</span>`;
+    }
+
+    // 徽章
+    const badges = [];
+    if (b0 || b1) badges.push(`<span class="pbadge ok">有成本基準</span>`);
+    else badges.push(`<span class="pbadge mut">無成本基準</span>`);
+    if (s.rateMonths > 0) {
+      badges.push(s.rateOut > 0
+        ? `<span class="pbadge warn">⚠ 製成率 ${s.rateOut} 月超出</span>`
+        : `<span class="pbadge ok">製成率正常</span>`);
+    } else {
+      badges.push(`<span class="pbadge mut">無製成率</span>`);
+    }
+
+    card.innerHTML = `
+      <div class="row1">
+        <span class="code">${p.code}</span>
+        <span class="cnt">${p.workN + p.yieldN}筆</span>
+        <input type="checkbox" title="加入比較" ${sel.has(p.code) ? 'checked' : ''}>
+      </div>
+      <div class="name">${p.name || '　'}</div>
+      <div class="badges">${badges.join('')}</div>
+      <div class="costline">${costline}</div>`;
+    const cb = card.querySelector('input');
+    cb.addEventListener('click', e => e.stopPropagation());
+    cb.addEventListener('change', e => {
+      card.classList.toggle('sel', e.target.checked);
+      toggleProduct(p.code, e.target.checked);
+    });
+    card.addEventListener('click', () => openDetail(p.code));
+    list.appendChild(card);
   }
   updatePickCount();
 }
@@ -1212,10 +1313,14 @@ function buildTable(code, year) {
 }
 
 /* ================= 成本推估 ================= */
-const COST_PERIODS = [
-  { key: 'y2025', label: '2025 全年', year: 2025, from: 1, to: 12 },
-  { key: 'h1_2026', label: '2026 上半年', year: 2026, from: 1, to: 6 },
-];
+/** 動態期間：最新資料年 = 今年（已生產足月），前一年 = 去年度基準 */
+function costPeriods() {
+  const cy = state.costRange ? state.costRange.max.y : new Date().getFullYear();
+  return [
+    { label: `${cy - 1} 全年`, year: cy - 1, from: 1, to: 12 },
+    { label: `${cy} 已生產`, year: cy, from: 1, to: 12 },
+  ];
+}
 let costAnomOpen = false;
 
 /** 某產品某期間：加權平均每鍋人時（人時/鍋）＋批量資訊。僅計足月。 */
@@ -1240,9 +1345,10 @@ function currentRate() {
 function renderCost() {
   const rate = currentRate();
   const q = document.getElementById('cost-search').value.trim().toLowerCase();
+  const PERIODS = costPeriods();
 
   // 期間可用性提示
-  const avail = COST_PERIODS.map(p => {
+  const avail = PERIODS.map(p => {
     const ok = [];
     for (let m = p.from; m <= p.to; m++) if (monthComplete(p.year, m, state.costRange)) ok.push(m);
     return `${p.label}：${ok.length ? ok.length + ' 個足月' : '無足月資料'}`;
@@ -1256,7 +1362,7 @@ function renderCost() {
   const rows = [];
   for (const pr of sortedProducts()) {
     if (q && !pr.code.toLowerCase().includes(q) && !(pr.name || '').toLowerCase().includes(q)) continue;
-    const bls = COST_PERIODS.map(p => costBaseline(pr.code, p));
+    const bls = PERIODS.map(p => costBaseline(pr.code, p));
     if (bls.every(b => b == null)) continue;   // 無任何成本資料的產品不列
     rows.push({ pr, bls });
   }
@@ -1294,8 +1400,8 @@ function renderCost() {
       <thead>
         <tr>
           <th rowspan="2">料號</th><th rowspan="2" class="lft">品名</th>
-          <th colspan="3">${COST_PERIODS[0].label}</th>
-          <th colspan="3">${COST_PERIODS[1].label}</th>
+          <th colspan="3">${PERIODS[0].label}</th>
+          <th colspan="3">${PERIODS[1].label}</th>
           <th rowspan="2">每鍋成本<br>變化</th>
         </tr>
         <tr>
@@ -1325,6 +1431,211 @@ function renderCostAnoms() {
   el.innerHTML = html;
   const btn = document.getElementById('anom-toggle');
   if (btn) btn.addEventListener('click', () => { costAnomOpen = !costAnomOpen; renderCostAnoms(); });
+}
+
+/* ================= 品項詳情（點卡進入） ================= */
+let detailCode = null;
+
+function openDetail(code) {
+  detailCode = code;
+  renderDetail(code);
+  const el = document.getElementById('detail-card');
+  el.classList.remove('hidden');
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function closeDetail() {
+  detailCode = null;
+  for (const id of ['det-time', 'det-scatter', 'det-rate']) {
+    if (state.charts[id]) { state.charts[id].destroy(); delete state.charts[id]; }
+  }
+  document.getElementById('detail-card').classList.add('hidden');
+}
+
+function renderDetail(code) {
+  const el = document.getElementById('detail-card');
+  const p = state.products.get(code);
+  const rate = currentRate();
+  const PERIODS = costPeriods();
+  const [b0, b1] = PERIODS.map(pd => costBaseline(code, pd));
+  const recs = state.costRecords.filter(r => r.code === code)
+    .sort((a, b) => ymdKey(a.d) - ymdKey(b.d));
+  const anoms = state.costAnoms.filter(a => a.code === code);
+  const color = cssVar('--s1');
+
+  /* ---- KPI ---- */
+  const baseAvg = b0 ? b0.manHrPerPot : (b1 ? b1.manHrPerPot : null);
+  const baseLbl = b0 ? `${PERIODS[0].label}平均` : (b1 ? `${PERIODS[1].label}平均` : '平均');
+  let diffHtml = '–';
+  if (b0 && b1) {
+    const d = (b1.manHrPerPot - b0.manHrPerPot) / b0.manHrPerPot * 100;
+    const bd = (b0.batch && b1.batch) ? (b1.batch - b0.batch) / b0.batch : 0;
+    diffHtml = `<span style="color:${d > 0 ? 'var(--critical)' : 'var(--good)'}">${d >= 0 ? '+' : ''}${fmt(d, 1)}%</span>${Math.abs(bd) > 0.3 ? ' ⚠批量' : ''}`;
+  }
+  const kpi = (k, v, u, extra) =>
+    `<div class="kpi"><div class="k">${k}</div><div class="v">${v} <small>${u || ''}</small></div>${extra ? `<div class="k">${extra}</div>` : ''}</div>`;
+  const kpis =
+    kpi(`${PERIODS[0].label}平均`, b0 ? fmt(b0.manHrPerPot, 3) : '–', '人時/鍋',
+        b0 ? `$${fmt(b0.manHrPerPot * rate, 1)}/鍋 · ${b0.sessions} 場 · 批量 ${fmt(b0.batch, 1)}` : '無足月資料') +
+    kpi(`${PERIODS[1].label}平均`, b1 ? fmt(b1.manHrPerPot, 3) : '–', '人時/鍋',
+        b1 ? `$${fmt(b1.manHrPerPot * rate, 1)}/鍋 · ${b1.sessions} 場 · 批量 ${fmt(b1.batch, 1)}` : '無足月資料') +
+    kpi('每鍋成本變化', diffHtml, '', b0 && b1 ? `費率 $${fmt(rate, 0)}/人時` : '') +
+    kpi('明細', `${recs.length}`, '場', anoms.length ? `<span style="color:var(--critical)">另 ${anoms.length} 筆異常已排除</span>` : '無異常');
+
+  /* ---- 逐批明細表 ---- */
+  const merged = [
+    ...recs.map(r => ({ t: 'ok', k: ymdKey(r.d), r })),
+    ...anoms.map(a => ({ t: 'anom', k: a.dkey, a })),
+  ].sort((x, y) => x.k - y.k);
+  let rows = '';
+  for (const m of merged) {
+    if (m.t === 'anom') {
+      rows += `<tr class="anomrow"><td>${m.a.date}</td><td colspan="3">—</td>
+        <td colspan="4" class="reason">⚠ ${m.a.reason}（不列入計算）</td></tr>`;
+      continue;
+    }
+    const r = m.r;
+    const manHr = r.personMin / 60;
+    const per = manHr / r.pots;
+    let vs = '<td class="mut">–</td>';
+    if (baseAvg != null) {
+      const d = (per - baseAvg) / baseAvg * 100;
+      vs = `<td class="${d > 0 ? 'bad' : ''}">${d >= 0 ? '+' : ''}${fmt(d, 1)}%</td>`;
+    }
+    rows += `<tr>
+      <td>${fmtDate(r.d)}</td>
+      <td><b>${fmt(r.pots, 0)}</b></td>
+      <td>${fmt(r.p1, 0)}人×${fmt(r.m1, 0)}分</td>
+      <td>${fmt(r.p2, 0)}人×${fmt(r.m2, 0)}分</td>
+      <td>${fmt(manHr, 1)}</td>
+      <td>${fmt(per, 3)}</td>
+      <td><b>${fmt(per * rate, 1)}</b></td>
+      ${vs}</tr>`;
+  }
+  if (!rows) rows = `<tr><td colspan="8" class="mut" style="text-align:center;padding:14px">此品項無成本明細資料</td></tr>`;
+
+  el.innerHTML = `
+    <div class="detail-head">
+      <div>
+        <h2>${code}　${p && p.name ? p.name : ''}</h2>
+        <div class="sub">逐批（場）生產明細與成本分析 · 異常列以紅底標示且不列入平均</div>
+      </div>
+      <button class="close no-print" id="det-close">✕ 關閉</button>
+    </div>
+    <div class="dkpis">${kpis}</div>
+    <div class="dtable-wrap">
+      <table class="mtable">
+        <thead><tr>
+          <th>日期</th><th>鍋數</th><th>製造</th><th>充填</th>
+          <th>總人時</th><th>每鍋人時</th><th>每鍋成本($)</th><th>vs ${baseLbl}</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="dcharts">
+      <div class="full">
+        <div class="dchart-title">每鍋人時 · 逐批走勢（點大小 = 鍋數）</div>
+        <div class="chart-box" style="height:260px"><canvas id="det-time"></canvas></div>
+        <div class="dchart-note">虛線＝${PERIODS[0].label}平均、實線＝${PERIODS[1].label}平均。點越大代表該場鍋數越多；大點通常落在低處＝批量攤薄效應。</div>
+      </div>
+      <div>
+        <div class="dchart-title">鍋數 vs 每鍋人時（批量效應）</div>
+        <div class="chart-box" style="height:240px"><canvas id="det-scatter"></canvas></div>
+        <div class="dchart-note">向右下彎的分布＝固定工時被更多鍋攤薄；水平分布＝幾乎無固定工時。</div>
+      </div>
+      <div>
+        <div class="dchart-title">月度製成率（${PERIODS[0].year} vs ${PERIODS[1].year}）</div>
+        <div class="chart-box" style="height:240px"><canvas id="det-rate"></canvas></div>
+        <div class="dchart-note">灰帶＝合理範圍 95%~105%（僅計足月）。</div>
+      </div>
+    </div>`;
+  el.querySelector('#det-close').addEventListener('click', closeDetail);
+
+  /* ---- 圖1：逐批走勢（bubble） ---- */
+  const maxPots = Math.max(1, ...recs.map(r => r.pots));
+  const rOf = pots => 3 + 8 * Math.sqrt(pots / maxPots);
+  makeChart('det-time', {
+    type: 'line',
+    data: {
+      labels: recs.map(r => `${r.d.y % 100}/${r.d.m}/${r.d.d}`),
+      datasets: [{
+        data: recs.map(r => (r.personMin / 60) / r.pots),
+        borderColor: withAlpha(color, 0.35), backgroundColor: color,
+        pointRadius: recs.map(r => rOf(r.pots)), pointHoverRadius: recs.map(r => rOf(r.pots) + 2),
+        pointBackgroundColor: withAlpha(color, 0.75), pointBorderColor: cssVar('--surface-1'),
+        borderWidth: 1.5, tension: 0.2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        refs: { lines: [
+          ...(b0 ? [{ value: b0.manHrPerPot, color: cssVar('--text-muted'), dash: [6, 4], width: 1.5, label: `${PERIODS[0].label}平均 ${fmt(b0.manHrPerPot, 2)}` }] : []),
+          ...(b1 ? [{ value: b1.manHrPerPot, color: color, dash: [], width: 1.5, label: `${PERIODS[1].label}平均 ${fmt(b1.manHrPerPot, 2)}`, labelBelow: true }] : []),
+        ] },
+        tooltip: { callbacks: { label: ctx => {
+          const r = recs[ctx.dataIndex];
+          return [` 每鍋人時：${fmt(ctx.parsed.y, 3)} 人時/鍋`,
+                  ` 鍋數：${fmt(r.pots, 0)}｜總人時：${fmt(r.personMin / 60, 1)}`,
+                  ` 每鍋成本：$${fmt(ctx.parsed.y * rate, 1)}`];
+        } } }
+      },
+      scales: baseScales('人時/鍋'),
+    }
+  });
+
+  /* ---- 圖2：鍋數 vs 每鍋人時 ---- */
+  makeChart('det-scatter', {
+    type: 'scatter',
+    data: { datasets: [{
+      data: recs.map(r => ({ x: r.pots, y: (r.personMin / 60) / r.pots })),
+      backgroundColor: withAlpha(color, 0.65), borderColor: cssVar('--surface-1'),
+      pointRadius: 5, pointHoverRadius: 7, borderWidth: 1,
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => {
+          const r = recs[ctx.dataIndex];
+          return [` ${fmtDate(r.d)}｜鍋數 ${fmt(r.pots, 0)}`, ` 每鍋人時：${fmt(ctx.parsed.y, 3)}`];
+        } } }
+      },
+      scales: {
+        x: { grid: { display: false }, border: { color: cssVar('--axis') },
+             ticks: { color: cssVar('--text-muted') },
+             title: { display: true, text: '鍋數/場', color: cssVar('--text-muted'), font: { size: 11 } } },
+        y: { grid: { color: cssVar('--grid') }, border: { display: false },
+             ticks: { color: cssVar('--text-muted') },
+             title: { display: true, text: '人時/鍋', color: cssVar('--text-muted'), font: { size: 11 } } }
+      },
+    }
+  });
+
+  /* ---- 圖3：月度製成率兩年對比 ---- */
+  const rateMetric = metricByKey('rate');
+  const years = [PERIODS[0].year, PERIODS[1].year];
+  const yColors = [cssVar('--text-muted'), color];
+  makeChart('det-rate', {
+    type: 'line',
+    data: { labels: MONTH_LABELS, datasets: years.map((y, i) => ({
+      label: `${y} 年`,
+      data: monthlySeries(code, y, rateMetric),
+      borderColor: yColors[i], backgroundColor: yColors[i],
+      borderWidth: i === 0 ? 1.5 : 2, borderDash: i === 0 ? [5, 4] : [],
+      pointRadius: 3.5, pointHoverRadius: 6, pointBorderColor: cssVar('--surface-1'), pointBorderWidth: 1,
+      spanGaps: false, tension: 0.15,
+    })) },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, labels: { boxWidth: 18, color: cssVar('--text-muted') } },
+        refs: { band: { from: 95, to: 105, color: cssVar('--band') },
+                lines: [{ value: 100, color: cssVar('--text-muted'), dash: [], width: 1 }] },
+      },
+      scales: baseScales('%'),
+    }
+  });
 }
 
 /* ================= 總 render ================= */
