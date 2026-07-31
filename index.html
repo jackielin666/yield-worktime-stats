@@ -243,27 +243,13 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
     <div class="rules" id="summary-rules"></div>
   </div>
 
-  <!-- cost estimation -->
-  <div class="card hidden" id="cost-card">
-    <div class="cost-head">
-      <div>
-        <div class="section-title" style="margin:0">生產成本推估 · 每鍋人力成本</div>
-        <div class="note" id="cost-sub"></div>
-      </div>
-      <div class="cost-controls">
-        <label class="note">工時費率　<input type="number" id="cost-rate" value="200" min="0" step="10"> $/人時</label>
-        <input type="text" id="cost-search" placeholder="搜尋料號或品名…">
-      </div>
-    </div>
-    <div id="cost-anom" class="note"></div>
-    <div class="mtable-wrap" id="cost-table"></div>
-  </div>
-
-  <!-- product picker -->
+  <!-- product picker：唯一的選擇入口 -->
   <div class="card picker-card hidden" id="picker-card">
     <div class="picker-head">
-      <h2>品項列表（點卡片看逐批詳情．勾選可多選比較）</h2>
-      <input type="text" id="prod-search" placeholder="搜尋料號或品名…">
+      <h2>選擇品項</h2>
+      <input type="text" id="prod-search" placeholder="輸入品號或品名，點卡片展開分析…">
+      <label class="note" style="white-space:nowrap">工時費率
+        <input type="number" id="cost-rate" value="200" min="0" step="10"> $/人時</label>
       <span class="lbl" style="font-size:13px;color:var(--text-secondary)">排序</span>
       <div class="seg" id="sort-seg"></div>
       <span class="note" id="pick-count"></span>
@@ -275,6 +261,18 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12px; margin-t
 
   <!-- product detail (single item deep-dive) -->
   <div class="card hidden" id="detail-card"></div>
+
+  <!-- 全品項成本總表（折疊） -->
+  <div class="card hidden" id="cost-card">
+    <div class="cost-head">
+      <button id="cost-toggle" style="font-weight:650">▶ 全品項成本總表（橫向比較）</button>
+    </div>
+    <div id="cost-body" class="hidden">
+      <div class="note" id="cost-sub" style="margin-bottom:8px"></div>
+      <div id="cost-anom" class="note"></div>
+      <div class="mtable-wrap" id="cost-table"></div>
+    </div>
+  </div>
 
   <!-- year toolbar -->
   <div class="card toolbar-card hidden" id="toolbar-card">
@@ -682,7 +680,6 @@ function parseWorkbook(wb, filename) {
   document.getElementById('summary-card').classList.remove('hidden');
   document.getElementById('cost-card').classList.remove('hidden');
   document.getElementById('picker-card').classList.remove('hidden');
-  document.getElementById('toolbar-card').classList.remove('hidden');
   detailCode = null;
   document.getElementById('detail-card').classList.add('hidden');
   renderYearSeg();
@@ -711,6 +708,8 @@ function renderSummary(filename, s) {
       <div class="k">${wr ? fmtDate(wr.min) + ' ~ ' + fmtDate(wr.max) : '—'}</div></div>
     <div class="stat"><div class="k">製成率資料（資料總表）</div><div class="v">${s.yieldValid.toLocaleString()} 筆 <small>（排除 ${s.yieldSkipped} 筆）</small></div>
       <div class="k">${yr ? fmtDate(yr.min) + ' ~ ' + fmtDate(yr.max) : '—'}</div></div>
+    <div class="stat"><div class="k">成本可計資料</div><div class="v">${state.costValid.toLocaleString()} 筆 <small>（排除異常 ${state.costAnoms.length} 筆）</small></div>
+      <div class="k">異常清單見「全品項成本總表」</div></div>
     <div class="stat"><div class="k">產品數</div><div class="v">${state.products.size} 項</div></div>
     <div class="stat"><div class="k">工時可計足月</div><div class="v" style="font-size:14px">${completeMonthSpan(wr)}</div></div>
     <div class="stat"><div class="k">製成率可計足月</div><div class="v" style="font-size:14px">${completeMonthSpan(yr)}</div></div>`;
@@ -789,7 +788,13 @@ document.getElementById('cost-rate').addEventListener('input', () => {
   renderCost(); renderProductList();
   if (detailCode) renderDetail(detailCode);
 });
-document.getElementById('cost-search').addEventListener('input', renderCost);
+document.getElementById('cost-toggle').addEventListener('click', () => {
+  costTableOpen = !costTableOpen;
+  document.getElementById('cost-toggle').textContent =
+    (costTableOpen ? '▼' : '▶') + ' 全品項成本總表（橫向比較）';
+  document.getElementById('cost-body').classList.toggle('hidden', !costTableOpen);
+  if (costTableOpen) renderCost();
+});
 
 function sortedProducts() {
   const { key, dir } = state.sort;
@@ -848,8 +853,10 @@ function renderProductList() {
   const sel = new Set(state.selected.map(s => s.code));
   const rate = currentRate();
   list.innerHTML = '';
+  const matches = [];
   for (const p of sortedProducts()) {
     if (q && !p.code.toLowerCase().includes(q) && !(p.name || '').toLowerCase().includes(q)) continue;
+    matches.push(p);
     const s = productCardSummary(p.code);
     const card = document.createElement('div');
     card.className = 'pcard' + (sel.has(p.code) ? ' sel' : '');
@@ -899,6 +906,12 @@ function renderProductList() {
     card.addEventListener('click', () => openDetail(p.code));
     list.appendChild(card);
   }
+  // 搜尋唯一命中 → 自動展開該品項（不捲動，避免打字時跳動）
+  if (q && matches.length === 1 && detailCode !== matches[0].code) {
+    detailCode = matches[0].code;
+    renderDetail(detailCode);
+    document.getElementById('detail-card').classList.remove('hidden');
+  }
   updatePickCount();
 }
 function toggleProduct(code, on) {
@@ -921,7 +934,9 @@ function clearSelection() {
 }
 function updatePickCount() {
   document.getElementById('pick-count').textContent =
-    state.selected.length ? `已選 ${state.selected.length}/${MAX_SELECT} 項` : `共 ${state.products.size} 項產品`;
+    state.selected.length
+      ? `已勾 ${state.selected.length}/${MAX_SELECT} 項${state.selected.length < 2 ? '（勾 2 項以上顯示比較圖）' : ''}`
+      : `共 ${state.products.size} 項產品`;
   document.getElementById('clear-btn').classList.toggle('hidden', !state.selected.length);
 }
 function renderChips() {
@@ -1089,11 +1104,13 @@ function renderCards() {
   for (const id in state.charts) {
     if (id.startsWith('cv-') || id.startsWith('cy-')) {
       const code = id.slice(3);
-      if (!state.selected.some(s => s.code === code)) { state.charts[id].destroy(); delete state.charts[id]; }
+      if (state.selected.length < 2 || !state.selected.some(s => s.code === code)) {
+        state.charts[id].destroy(); delete state.charts[id];
+      }
     }
   }
   wrap.innerHTML = '';
-  if (!state.year) return;
+  if (!state.year || state.selected.length < 2) return;
   for (const s of state.selected) renderProductCard(wrap, s);
 }
 
@@ -1322,6 +1339,7 @@ function costPeriods() {
   ];
 }
 let costAnomOpen = false;
+let costTableOpen = false;
 
 /** 某產品某期間：加權平均每鍋人時（人時/鍋）＋批量資訊。僅計足月。 */
 function costBaseline(code, p) {
@@ -1343,8 +1361,8 @@ function currentRate() {
 }
 
 function renderCost() {
+  if (!costTableOpen) return;   // 折疊時不重繪（展開時會呼叫）
   const rate = currentRate();
-  const q = document.getElementById('cost-search').value.trim().toLowerCase();
   const PERIODS = costPeriods();
 
   // 期間可用性提示
@@ -1361,7 +1379,6 @@ function renderCost() {
   // 資料列
   const rows = [];
   for (const pr of sortedProducts()) {
-    if (q && !pr.code.toLowerCase().includes(q) && !(pr.name || '').toLowerCase().includes(q)) continue;
     const bls = PERIODS.map(p => costBaseline(pr.code, p));
     if (bls.every(b => b == null)) continue;   // 無任何成本資料的產品不列
     rows.push({ pr, bls });
@@ -1521,7 +1538,9 @@ function renderDetail(code) {
       </div>
       <button class="close no-print" id="det-close">✕ 關閉</button>
     </div>
+    <div class="section-title" style="margin-top:14px">成本推估（費率 $${fmt(rate, 0)}/人時，可於上方修改）</div>
     <div class="dkpis">${kpis}</div>
+    <div class="section-title" style="margin-top:16px">逐批明細</div>
     <div class="dtable-wrap">
       <table class="mtable">
         <thead><tr>
@@ -1640,6 +1659,9 @@ function renderDetail(code) {
 
 /* ================= 總 render ================= */
 function renderAll() {
+  // 比較區（年份列＋總覽圖＋逐產品卡）僅在勾選 2 項以上時展開
+  const cmp = state.selected.length >= 2 && !!state.year;
+  document.getElementById('toolbar-card').classList.toggle('hidden', !cmp);
   renderOverview();
   renderCards();
 }
