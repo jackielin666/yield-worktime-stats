@@ -260,9 +260,29 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12.5px; margin
 .cost-head #cost-sub { margin-top: 4px; max-width: 720px; line-height: 1.5; }
 .cost-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .cost-controls label { display: inline-flex; align-items: center; color: var(--text-secondary); }
-#cost-rate { width: 78px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px;
-  background: var(--surface-2); color: var(--text-primary); font-size: 13px; font-variant-numeric: tabular-nums; }
-#cost-rate:focus { outline: none; border-color: var(--accent); background: var(--surface-1); }
+/* 費率膠囊：全頁金額的唯一變因，做得夠醒目 */
+.rate-box {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: linear-gradient(135deg, #eef4ff, #dfeaff);
+  border: 1.5px solid #a9c3f2; border-radius: 999px;
+  padding: 5px 14px 5px 12px;
+  font-size: 13px; font-weight: 700; color: var(--brand-1);
+  box-shadow: 0 2px 6px -2px rgba(37,99,235,0.35);
+}
+#cost-rate {
+  width: 64px; border: none; background: transparent;
+  font: inherit; font-size: 16px; font-weight: 800; color: var(--brand-1);
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+#cost-rate:focus { outline: none; }
+.rate-box .unit { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+/* 費率變更 → 受影響金額閃爍 */
+@keyframes mflash {
+  0% { background: #ffdf8e; box-shadow: 0 0 0 3px #ffdf8e; }
+  100% { background: transparent; box-shadow: none; }
+}
+.mny { border-radius: 4px; }
+.mny.flash { animation: mflash 1.4s ease-out; }
 #cost-search { padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--surface-2); color: var(--text-primary); font-size: 13px; min-width: 200px; }
 #cost-search:focus { outline: none; border-color: var(--accent); background: var(--surface-1); }
@@ -273,13 +293,28 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12.5px; margin
 .cost-tbl { table-layout: fixed; }
 .cost-tbl th, .cost-tbl td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cost-tbl th.lft { text-align: left; }
-.cost-tbl col.c-code  { width: 70px; }
+.cost-tbl col.c-code  { width: 88px; }
 .cost-tbl col.c-name  { width: auto; }
 .cost-tbl col.c-hr    { width: 78px; }
 .cost-tbl col.c-cost  { width: 96px; }
 .cost-tbl col.c-batch { width: 62px; }
 .cost-tbl col.c-diff  { width: 80px; }
 .cost-tbl td:nth-child(2) { white-space: normal; }
+/* 兩期分組：基準期灰藍、當期亮藍，粗線分隔避免黏在一起 */
+.cost-tbl thead th.p25 { background: #eaeef7; color: #51607a; }
+.cost-tbl thead th.p26 { background: #dbe8ff; color: var(--brand-1); }
+.cost-tbl thead th.s25 { background: #f0f3fa; }
+.cost-tbl thead th.s26 { background: #e7effe; }
+.cost-tbl .pchip {
+  font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+  margin-left: 7px; vertical-align: 1px;
+}
+.cost-tbl .p25 .pchip { background: #cbd5e6; color: #43506a; }
+.cost-tbl .p26 .pchip { background: var(--brand-2); color: #fff; }
+.cost-tbl th.gs, .cost-tbl td.gs { border-left: 2.5px solid #b9c8e8; }
+.cost-tbl tbody tr td:nth-child(3), .cost-tbl tbody tr td:nth-child(4), .cost-tbl tbody tr td:nth-child(5) { background: #f4f6fb; }
+.cost-tbl tbody tr td:nth-child(6), .cost-tbl tbody tr td:nth-child(7), .cost-tbl tbody tr td:nth-child(8) { background: #ecf2fe; }
+.cost-tbl tbody tr:hover td { background: var(--accent-soft); }
 .hidden { display: none !important; }
 
 /* 詳情展開入場動畫 */
@@ -326,8 +361,8 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12.5px; margin
     <div class="picker-head">
       <h2>選擇品項</h2>
       <input type="text" id="prod-search" placeholder="輸入品號或品名，點卡片展開分析…">
-      <label class="note" style="white-space:nowrap">工時費率
-        <input type="number" id="cost-rate" value="200" min="0" step="10"> $/人時</label>
+      <label class="rate-box" title="全頁所有 $ 金額均以此費率換算，修改後變動處會亮起">💰 工時費率
+        <input type="number" id="cost-rate" value="200" min="0" step="10"><span class="unit">$/人時</span></label>
       <span class="lbl" style="font-size:13px;color:var(--text-secondary)">排序</span>
       <div class="seg" id="sort-seg"></div>
       <span class="note" id="pick-count"></span>
@@ -867,8 +902,10 @@ function baseline(code, year, metric) {
 /* ================= 產品選擇 ================= */
 document.getElementById('prod-search').addEventListener('input', renderProductList);
 document.getElementById('cost-rate').addEventListener('input', () => {
+  rateFlash = true;
   renderCost(); renderProductList();
   if (detailCode) renderDetail(detailCode);
+  rateFlash = false;
 });
 document.getElementById('cost-toggle').addEventListener('click', () => {
   costTableOpen = !costTableOpen;
@@ -949,11 +986,11 @@ function renderProductList() {
     if (b0 && b1) {
       const d = (b1.manHrPerPot - b0.manHrPerPot) / b0.manHrPerPot * 100;
       const cls = d > 0 ? 'up' : 'down';
-      costline = `每鍋 $${fmt(b0.manHrPerPot * rate, 0)} → $${fmt(b1.manHrPerPot * rate, 0)}
+      costline = `每鍋 ${mny(`$${fmt(b0.manHrPerPot * rate, 0)} → $${fmt(b1.manHrPerPot * rate, 0)}`)}
         <span class="${cls}">${d >= 0 ? '+' : ''}${fmt(d, 1)}%</span>`;
     } else if (b0 || b1) {
       const b = b0 || b1, pl = b0 ? s.PERIODS[0].label : s.PERIODS[1].label;
-      costline = `每鍋 $${fmt(b.manHrPerPot * rate, 0)}（${pl}）`;
+      costline = `每鍋 ${mny(`$${fmt(b.manHrPerPot * rate, 0)}`)}（${pl}）`;
     } else {
       costline = `<span style="color:var(--text-muted)">尚無可計成本資料</span>`;
     }
@@ -1451,6 +1488,9 @@ function currentRate() {
   const v = toNum(document.getElementById('cost-rate').value);
   return v != null && v >= 0 ? v : 0;
 }
+/** 費率剛變更時，包裹金額的 span 會帶 flash 動畫，凸顯連動變化 */
+let rateFlash = false;
+function mny(html) { return `<span class="mny${rateFlash ? ' flash' : ''}">${html}</span>`; }
 
 function renderCost() {
   if (!costTableOpen) return;   // 折疊時不重繪（展開時會呼叫）
@@ -1479,20 +1519,20 @@ function renderCost() {
   let body = '';
   for (const { pr, bls } of rows) {
     const cells = bls.map(b => {
-      if (!b) return `<td class="mut">–</td><td class="mut">–</td><td class="mut">–</td>`;
+      if (!b) return `<td class="mut gs">–</td><td class="mut">–</td><td class="mut">–</td>`;
       const cost = b.manHrPerPot * rate;
       const bt = b.batch != null
         ? `<td class="mut" title="總鍋數 ${fmt(b.pots, 0)}／${b.sessions} 場">${fmt(b.batch, 1)}</td>`
         : `<td class="mut">–</td>`;
-      return `<td>${fmt(b.manHrPerPot, 3)}</td><td><b>${fmt(cost, 1)}</b></td>${bt}`;
+      return `<td class="gs">${fmt(b.manHrPerPot, 3)}</td><td>${mny(`<b>${fmt(cost, 1)}</b>`)}</td>${bt}`;
     }).join('');
-    let diff = '<td class="mut">–</td>';
+    let diff = '<td class="mut gs">–</td>';
     if (bls[0] && bls[1]) {
       const d = (bls[1].manHrPerPot - bls[0].manHrPerPot) / bls[0].manHrPerPot * 100;
       const bd = (bls[0].batch && bls[1].batch) ? (bls[1].batch - bls[0].batch) / bls[0].batch : 0;
       const warn = Math.abs(bd) > 0.3;
       const tip = warn ? ` title="批量差異大：${fmt(bls[0].batch, 1)} → ${fmt(bls[1].batch, 1)} 鍋/場，此成本變化可能來自批量、非純效率"` : '';
-      diff = `<td class="${d > 0 ? 'bad' : ''}"${tip}>${d >= 0 ? '+' : ''}${fmt(d, 1)}%${warn ? ' ⚠' : ''}</td>`;
+      diff = `<td class="gs ${d > 0 ? 'bad' : ''}"${tip}>${d >= 0 ? '+' : ''}${fmt(d, 1)}%${warn ? ' ⚠' : ''}</td>`;
     }
     body += `<tr><td>${pr.code}</td><td style="text-align:left">${pr.name || ''}</td>${cells}${diff}</tr>`;
   }
@@ -1509,13 +1549,13 @@ function renderCost() {
       <thead>
         <tr>
           <th rowspan="2">料號</th><th rowspan="2" class="lft">品名</th>
-          <th colspan="3">${PERIODS[0].label}</th>
-          <th colspan="3">${PERIODS[1].label}</th>
-          <th rowspan="2">每鍋成本<br>變化</th>
+          <th colspan="3" class="gs p25">${PERIODS[0].label}<span class="pchip">基準</span></th>
+          <th colspan="3" class="gs p26">${PERIODS[1].label}<span class="pchip">當期</span></th>
+          <th rowspan="2" class="gs">每鍋成本<br>變化</th>
         </tr>
         <tr>
-          <th>每鍋人時</th><th>每鍋成本($)</th><th>批量<br>鍋/場</th>
-          <th>每鍋人時</th><th>每鍋成本($)</th><th>批量<br>鍋/場</th>
+          <th class="gs s25">每鍋人時</th><th class="s25">每鍋成本($)</th><th class="s25">批量<br>鍋/場</th>
+          <th class="gs s26">每鍋人時</th><th class="s26">每鍋成本($)</th><th class="s26">批量<br>鍋/場</th>
         </tr>
       </thead>
       <tbody>${body}</tbody>
@@ -1584,9 +1624,9 @@ function renderDetail(code) {
     `<div class="kpi"><div class="k">${k}</div><div class="v">${v} <small>${u || ''}</small></div>${extra ? `<div class="k">${extra}</div>` : ''}</div>`;
   const kpis =
     kpi(`${PERIODS[0].label}平均`, b0 ? fmt(b0.manHrPerPot, 3) : '–', '人時/鍋',
-        b0 ? `$${fmt(b0.manHrPerPot * rate, 1)}/鍋 · ${b0.sessions} 場 · 批量 ${fmt(b0.batch, 1)}` : '無足月資料') +
+        b0 ? `${mny(`$${fmt(b0.manHrPerPot * rate, 1)}/鍋`)} · ${b0.sessions} 場 · 批量 ${fmt(b0.batch, 1)}` : '無足月資料') +
     kpi(`${PERIODS[1].label}平均`, b1 ? fmt(b1.manHrPerPot, 3) : '–', '人時/鍋',
-        b1 ? `$${fmt(b1.manHrPerPot * rate, 1)}/鍋 · ${b1.sessions} 場 · 批量 ${fmt(b1.batch, 1)}` : '無足月資料') +
+        b1 ? `${mny(`$${fmt(b1.manHrPerPot * rate, 1)}/鍋`)} · ${b1.sessions} 場 · 批量 ${fmt(b1.batch, 1)}` : '無足月資料') +
     kpi('每鍋成本變化', diffHtml, '', b0 && b1 ? `費率 $${fmt(rate, 0)}/人時` : '') +
     kpi('明細', `${recs.length}`, '場', anoms.length ? `<span style="color:var(--critical)">另 ${anoms.length} 筆異常已排除</span>` : '無異常');
 
@@ -1617,7 +1657,7 @@ function renderDetail(code) {
       <td>${fmt(r.p2, 0)}人×${fmt(r.m2, 0)}分</td>
       <td>${fmt(manHr, 1)}</td>
       <td>${fmt(per, 3)}</td>
-      <td><b>${fmt(per * rate, 1)}</b></td>
+      <td>${mny(`<b>${fmt(per * rate, 1)}</b>`)}</td>
       ${vs}</tr>`;
   }
   if (!rows) rows = `<tr><td colspan="8" class="mut" style="text-align:center;padding:14px">此品項無成本明細資料</td></tr>`;
