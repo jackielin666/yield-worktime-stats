@@ -188,6 +188,16 @@ button.primary, button.on {
 .dkpis { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
 .dtable-wrap { overflow-x: auto; max-height: 380px; overflow-y: auto; margin-top: 8px; }
 .dtable-wrap thead th { position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+/* 每鍋成本欄整條框選凸顯（逐批明細） */
+.mtable thead th.ccol {
+  border-top: 2px solid var(--brand-2); border-left: 2px solid var(--brand-2); border-right: 2px solid var(--brand-2);
+  background: #dbe8ff; color: var(--brand-1);
+}
+.mtable tbody tr td.ccol {
+  border-left: 2px solid var(--brand-2); border-right: 2px solid var(--brand-2);
+  background: #edf3ff; font-size: 13px;
+}
+.mtable tbody tr:last-child td.ccol { border-bottom: 2px solid var(--brand-2); }
 .mtable tbody tr.anomrow td, .mtable tbody tr.anomrow:hover td { background: var(--critical-soft); color: var(--text-muted); }
 .mtable tbody tr.anomrow td.reason { color: var(--critical); text-align: left; }
 .dcharts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
@@ -1657,7 +1667,7 @@ function renderDetail(code) {
       <td>${fmt(r.p2, 0)}人×${fmt(r.m2, 0)}分</td>
       <td>${fmt(manHr, 1)}</td>
       <td>${fmt(per, 3)}</td>
-      <td>${mny(`<b>${fmt(per * rate, 1)}</b>`)}</td>
+      <td class="ccol">${mny(`<b>${fmt(per * rate, 1)}</b>`)}</td>
       ${vs}</tr>`;
   }
   if (!rows) rows = `<tr><td colspan="8" class="mut" style="text-align:center;padding:14px">此品項無成本明細資料</td></tr>`;
@@ -1677,7 +1687,7 @@ function renderDetail(code) {
       <table class="mtable">
         <thead><tr>
           <th>日期</th><th>鍋數</th><th>製造</th><th>充填</th>
-          <th>總人時</th><th>每鍋人時</th><th>每鍋成本($)</th><th>vs ${baseLbl}</th>
+          <th>總人時</th><th>每鍋人時</th><th class="ccol">每鍋成本($)</th><th>vs ${baseLbl}</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
