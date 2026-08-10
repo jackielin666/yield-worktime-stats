@@ -200,6 +200,14 @@ button.primary, button.on {
 .mtable tbody tr:last-child td.ccol { border-bottom: 2px solid var(--brand-2); }
 .mtable tbody tr.anomrow td, .mtable tbody tr.anomrow:hover td { background: var(--critical-soft); color: var(--text-muted); }
 .mtable tbody tr.anomrow td.reason { color: var(--critical); text-align: left; }
+/* 統計離群值：琥珀底，與紅底的「資料異常」區隔——數據本身有效，只是不納入平均 */
+.mtable tbody tr.outrow td, .mtable tbody tr.outrow:hover td {
+  background: var(--warn-soft); color: var(--text-secondary);
+  text-decoration: line-through; text-decoration-color: rgba(217,119,6,0.5);
+}
+.mtable tbody tr.outrow td.reason {
+  color: var(--warn); text-align: left; text-decoration: none; font-weight: 600;
+}
 .dcharts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
 .dcharts .full { grid-column: 1 / -1; }
 @media (max-width: 900px) { .dcharts { grid-template-columns: 1fr; } }
@@ -361,7 +369,6 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12.5px; margin
   <!-- parse summary -->
   <div class="card hidden" id="summary-card">
     <button class="reupload no-print" onclick="resetAll()">重新上傳</button>
-    <button class="reupload no-print" onclick="exportManpowerData()" title="匯出 2025 全年及 2026 年至今的每品項平均每鍋人時資料">匯出人時資料</button>
     <div class="section-title">資料解析摘要</div>
     <div class="summary-grid" id="summary-grid"></div>
     <div class="rules" id="summary-rules"></div>
@@ -390,10 +397,13 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12.5px; margin
   <div class="card hidden" id="cost-card">
     <div class="cost-head">
       <button id="cost-toggle" style="font-weight:650">▶ 全品項成本總表（橫向比較）</button>
+      <button id="cost-export" class="primary no-print"
+              title="下載成本總表 Excel（含離群明細、異常明細三個分頁）">⬇ 下載 Excel</button>
     </div>
     <div id="cost-body" class="hidden">
       <div class="note" id="cost-sub" style="margin-bottom:8px"></div>
       <div id="cost-anom" class="note"></div>
+      <div id="cost-out" class="note"></div>
       <div class="mtable-wrap" id="cost-table"></div>
     </div>
   </div>
@@ -438,11 +448,12 @@ document.getElementById('today').textContent = new Date().toLocaleDateString('zh
 const state = {
   workAgg: new Map(),   // "code|y|m" -> {total, man, pots, n}
   yieldAgg: new Map(),  // "code|y|m" -> {est, act, n}
-  costAgg: new Map(),   // "code|y|m" -> {personMin, pots, n}（自算人時，已通過核對）
-  costRecords: [],      // 每場明細 [{d, code, pots, p1, m1, p2, m2, personMin}]
+  costAgg: new Map(),   // "code|y|m" -> {personMin, pots, n}（自算人時，已核對且排除離群）
+  costRecords: [],      // 每場明細 [{d, code, pots, p1, m1, p2, m2, personMin, outlier, outInfo}]
   costRange: null,      // 成本有效列的日期範圍
   costAnoms: [],        // 異常列 [{date, dkey, code, name, computed, oVal, reason}]
-  costValid: 0,
+  costOutliers: [],     // 統計離群值 [{code, d, dkey, pots, v, med, mz, dev, n}]
+  costValid: 0,         // 實際納入平均的場次（已扣離群）
   products: new Map(),  // code -> {code, name, workN, yieldN}
   workRange: null,      // {min:{y,m,d}, max:{y,m,d}}
   yieldRange: null,
@@ -640,7 +651,7 @@ function parseWorkbook(wb, filename) {
   state.workAgg = new Map(); state.yieldAgg = new Map(); state.products = new Map();
   state.selected = []; state.workRange = null; state.yieldRange = null;
   state.costAgg = new Map(); state.costRange = null; state.costAnoms = []; state.costValid = 0;
-  state.costRecords = [];
+  state.costRecords = []; state.costOutliers = [];
 
   /* ---- 工時 ---- */
   const wRows = XLSX.utils.sheet_to_json(wsWork, { header: 1, defval: null, raw: true });
@@ -719,17 +730,14 @@ function parseWorkbook(wb, filename) {
       state.costAnoms.push({ date: d ? fmtDate(d) : '—', dkey: d ? ymdKey(d) : 0, code, name, computed: computed != null ? Math.round(computed) : null, oVal, reason });
       continue;
     }
-    // 通過核對 → 納入
-    state.costValid++;
+    // 通過核對 → 收錄（離群判定需看全品項分布，於全部收集完後統一進行）
     state.costRecords.push({ d, code, pots, p1: st1.people, m1: st1.min, p2: st2.people, m2: st2.min, personMin: computed });
-    const k = `${code}|${d.y}|${d.m}`;
-    let a = state.costAgg.get(k);
-    if (!a) { a = { personMin: 0, pots: 0, n: 0 }; state.costAgg.set(k, a); }
-    a.personMin += computed; a.pots += pots; a.n++;
     if (!cMin || ymdKey(d) < ymdKey(cMin)) cMin = d;
     if (!cMax || ymdKey(d) > ymdKey(cMax)) cMax = d;
   }
   state.costRange = cMin ? { min: cMin, max: cMax } : null;
+  flagCostOutliers();
+  buildCostAgg();
 
   /* ---- 資料總表（製成率） ---- */
   const yRows = XLSX.utils.sheet_to_json(wsMain, { header: 1, defval: null, raw: true });
@@ -835,13 +843,14 @@ function renderSummary(filename, s) {
       <div class="k">${wr ? fmtDate(wr.min) + ' ~ ' + fmtDate(wr.max) : '—'}</div></div>
     <div class="stat"><div class="k">製成率資料（資料總表）</div><div class="v">${s.yieldValid.toLocaleString()} 筆 <small>（排除 ${s.yieldSkipped} 筆）</small></div>
       <div class="k">${yr ? fmtDate(yr.min) + ' ~ ' + fmtDate(yr.max) : '—'}</div></div>
-    <div class="stat"><div class="k">成本可計資料</div><div class="v">${state.costValid.toLocaleString()} 筆 <small>（排除異常 ${state.costAnoms.length} 筆）</small></div>
-      <div class="k">異常清單見「全品項成本總表」</div></div>
+    <div class="stat"><div class="k">成本可計資料</div><div class="v">${state.costValid.toLocaleString()} 筆 <small>（排除異常 ${state.costAnoms.length} 筆、離群 ${state.costOutliers.length} 筆）</small></div>
+      <div class="k">清單見「全品項成本總表」</div></div>
     <div class="stat"><div class="k">產品數</div><div class="v">${state.products.size} 項</div></div>
     <div class="stat"><div class="k">工時可計足月</div><div class="v" style="font-size:14px">${completeMonthSpan(wr)}</div></div>
     <div class="stat"><div class="k">製成率可計足月</div><div class="v" style="font-size:14px">${completeMonthSpan(yr)}</div></div>`;
   document.getElementById('summary-rules').textContent =
-    '排除規則：專案／研發／無料號列、無實際生產數據列（含未來排程）、總生產時間為 0 的列；月度統計僅計足月。';
+    '排除規則：專案／研發／無料號列、無實際生產數據列（含未來排程）、總生產時間為 0 的列；月度統計僅計足月。' +
+    `成本另以穩健統計（中位數＋MAD）剔除離群場次：該品項需 ≥ ${OUT_MIN_N} 場才判定，修正 z 分數 ≥ ${OUT_MZ} 且偏離中位數 ≥ ${OUT_DEV * 100}% 者不列入平均，單一品項最多剔除 ${OUT_CAP * 100}%。`;
 }
 
 function resetAll() {
@@ -924,6 +933,9 @@ document.getElementById('cost-toggle').addEventListener('click', () => {
     (costTableOpen ? '▼' : '▶') + ' 全品項成本總表（橫向比較）';
   document.getElementById('cost-body').classList.toggle('hidden', !costTableOpen);
   if (costTableOpen) renderCost();
+});
+document.getElementById('cost-export').addEventListener('click', () => {
+  exportCostTable();
 });
 
 function sortedProducts() {
@@ -1471,6 +1483,69 @@ function buildTable(code, year) {
 
 /* ================= 成本推估 ================= */
 /** 動態期間：最新資料年 = 今年（已生產足月），前一年 = 去年度基準 */
+/* ================= 統計離群值判定 =================
+   單場記錄異常（誤填時間、試作、代工、臨時併鍋…）會嚴重拉偏平均，
+   須自動剔除。採穩健統計法：中位數 + MAD（絕對中位差），
+   本身不受極端值影響，比平均值±標準差可靠。
+   四個條件須同時成立才剔除：
+     1. 該品項至少 OUT_MIN_N 場 —— 資訊量太少無法判定，一律保留；
+     2. 修正 z 分數 |0.6745×(x−中位數)/MAD| ≥ OUT_MZ（Iglewicz–Hoaglin 標準門檻）；
+     3. 偏離中位數 ≥ OUT_DEV —— 防止分布極集中的品項把正常波動誤判為離群；
+     4. 單一品項最多剔除 OUT_CAP 比例，只留最極端者 —— 避免整批資料被判掉。 */
+const OUT_MIN_N = 8, OUT_MZ = 3.5, OUT_DEV = 0.35, OUT_CAP = 0.10;
+
+function median(arr) {
+  const s = [...arr].sort((a, b) => a - b), n = s.length;
+  if (!n) return null;
+  return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+}
+
+function flagCostOutliers() {
+  state.costOutliers = [];
+  const byCode = new Map();
+  for (const r of state.costRecords) {
+    r.outlier = false; r.outInfo = null;
+    if (!byCode.has(r.code)) byCode.set(r.code, []);
+    byCode.get(r.code).push(r);
+  }
+  for (const [code, arr] of byCode) {
+    if (arr.length < OUT_MIN_N) continue;              // 條件1：資訊量不足 → 不判定
+    const vs = arr.map(r => (r.personMin / 60) / r.pots);
+    const med = median(vs);
+    const mad = median(vs.map(v => Math.abs(v - med)));
+    if (!(mad > 0) || !(med > 0)) continue;            // 無離散度 → 無從判定
+    const cand = [];
+    arr.forEach((r, i) => {
+      const mz = 0.6745 * (vs[i] - med) / mad;         // 條件2
+      const dev = Math.abs(vs[i] - med) / med;         // 條件3
+      if (Math.abs(mz) >= OUT_MZ && dev >= OUT_DEV) cand.push({ r, v: vs[i], mz, dev });
+    });
+    cand.sort((a, b) => Math.abs(b.mz) - Math.abs(a.mz));
+    const cap = Math.max(1, Math.floor(arr.length * OUT_CAP));   // 條件4
+    for (const c of cand.slice(0, cap)) {
+      c.r.outlier = true;
+      c.r.outInfo = { v: c.v, med, mz: c.mz, dev: c.dev, high: c.v > med };
+      state.costOutliers.push({ code, d: c.r.d, dkey: ymdKey(c.r.d), pots: c.r.pots,
+                                v: c.v, med, mz: c.mz, dev: c.dev, n: arr.length });
+    }
+  }
+  state.costOutliers.sort((a, b) => a.code.localeCompare(b.code) || a.dkey - b.dkey);
+}
+
+/** 由「非離群」的逐場記錄重建月度彙總；所有平均值、成本、圖表皆以此為準 */
+function buildCostAgg() {
+  state.costAgg = new Map();
+  state.costValid = 0;
+  for (const r of state.costRecords) {
+    if (r.outlier) continue;
+    state.costValid++;
+    const k = `${r.code}|${r.d.y}|${r.d.m}`;
+    let a = state.costAgg.get(k);
+    if (!a) { a = { personMin: 0, pots: 0, n: 0 }; state.costAgg.set(k, a); }
+    a.personMin += r.personMin; a.pots += r.pots; a.n++;
+  }
+}
+
 function costPeriods() {
   const cy = state.costRange ? state.costRange.max.y : new Date().getFullYear();
   return [
@@ -1516,7 +1591,8 @@ function renderCost() {
   });
   document.getElementById('cost-sub').innerHTML =
     `每鍋人力成本 = (自算總人時 ÷ 60 ÷ 總鍋數) × 費率　·　午休 12:00–13:00 已扣、前置作業已計入　·　` +
-    `納入 ${state.costValid.toLocaleString()} 筆、排除異常 ${state.costAnoms.length.toLocaleString()} 筆　·　${avail.join('　')}<br>` +
+    `納入 ${state.costValid.toLocaleString()} 筆、排除異常 ${state.costAnoms.length.toLocaleString()} 筆、` +
+    `<span style="color:var(--warn)">剔除統計離群 ${state.costOutliers.length.toLocaleString()} 筆</span>　·　${avail.join('　')}<br>` +
     `「批量」= 平均每場鍋數（滑鼠移上看總鍋數/場次）；鍋數越多每鍋人時越低。兩期批量差異大時，成本變化會標 ⚠，提醒該差異可能來自批量而非效率。`;
 
   // 資料列
@@ -1591,6 +1667,33 @@ function renderCostAnoms() {
   el.innerHTML = html;
   const btn = document.getElementById('anom-toggle');
   if (btn) btn.addEventListener('click', () => { costAnomOpen = !costAnomOpen; renderCostAnoms(); });
+  renderCostOutliers();
+}
+
+let costOutOpen = false;
+function renderCostOutliers() {
+  const el = document.getElementById('cost-out');
+  const n = state.costOutliers.length;
+  if (!n) { el.innerHTML = '<span style="color:var(--good)">✓ 無統計離群值。</span>'; return; }
+  let html = `<button id="out-toggle" style="font-size:12px;padding:4px 10px;color:var(--warn)">${costOutOpen ? '▼' : '▶'} 已剔除 ${n} 筆統計離群值（資料本身有效，但偏離該品項常態過大，不列入平均）</button>`;
+  if (costOutOpen) {
+    const rows = state.costOutliers.map(o => {
+      const pr = state.products.get(o.code);
+      return `<tr><td>${fmtDate(o.d)}</td><td>${o.code}</td><td style="text-align:left">${pr && pr.name ? pr.name : ''}</td>
+        <td>${fmt(o.pots, 0)}</td><td><b>${fmt(o.v, 3)}</b></td><td>${fmt(o.med, 3)}</td>
+        <td class="${o.v > o.med ? 'bad' : ''}">${o.v > o.med ? '+' : '−'}${fmt(o.dev * 100, 0)}%</td>
+        <td>${fmt(Math.abs(o.mz), 1)}</td><td>${o.n}</td></tr>`;
+    }).join('');
+    html += `<div class="mtable-wrap cost-anom-list"><table class="mtable">
+      <thead><tr><th>日期</th><th>料號</th><th style="text-align:left">品名</th><th>鍋數</th>
+        <th>每鍋人時</th><th>該品中位數</th><th>偏離</th><th title="修正 z 分數，≥${OUT_MZ} 才判離群">z</th>
+        <th title="該品項總場次">場次</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <div class="note" style="margin-top:6px">判定門檻：該品項 ≥ ${OUT_MIN_N} 場、修正 z 分數 ≥ ${OUT_MZ}、且偏離中位數 ≥ ${OUT_DEV * 100}%；單一品項最多剔除 ${OUT_CAP * 100}%。場次不足者不判定，全數保留。</div></div>`;
+  }
+  el.innerHTML = html;
+  const btn = document.getElementById('out-toggle');
+  if (btn) btn.addEventListener('click', () => { costOutOpen = !costOutOpen; renderCostOutliers(); });
 }
 
 /* ================= 品項詳情（點卡進入） ================= */
@@ -1620,6 +1723,8 @@ function renderDetail(code) {
   const recs = state.costRecords.filter(r => r.code === code)
     .sort((a, b) => ymdKey(a.d) - ymdKey(b.d));
   const anoms = state.costAnoms.filter(a => a.code === code);
+  const outs = recs.filter(r => r.outlier);
+  const kept = recs.length - outs.length;
   const color = cssVar('--s1');
 
   /* ---- KPI ---- */
@@ -1639,7 +1744,10 @@ function renderDetail(code) {
     kpi(`${PERIODS[1].label}平均`, b1 ? fmt(b1.manHrPerPot, 3) : '–', '人時/鍋',
         b1 ? `${mny(`$${fmt(b1.manHrPerPot * rate, 1)}/鍋`)} · ${b1.sessions} 場 · 批量 ${fmt(b1.batch, 1)}` : '無足月資料') +
     kpi('每鍋成本變化', diffHtml, '', b0 && b1 ? `費率 $${fmt(rate, 0)}/人時` : '') +
-    kpi('明細', `${recs.length}`, '場', anoms.length ? `<span style="color:var(--critical)">另 ${anoms.length} 筆異常已排除</span>` : '無異常');
+    kpi('明細', `${kept}`, '場', [
+      outs.length ? `<span style="color:var(--warn)">離群剔除 ${outs.length} 場</span>` : '',
+      anoms.length ? `<span style="color:var(--critical)">異常排除 ${anoms.length} 筆</span>` : '',
+    ].filter(Boolean).join('　') || '無異常、無離群');
 
   /* ---- 逐批明細表 ---- */
   const merged = [
@@ -1656,6 +1764,19 @@ function renderDetail(code) {
     const r = m.r;
     const manHr = r.personMin / 60;
     const per = manHr / r.pots;
+    if (r.outlier) {
+      const o = r.outInfo;
+      rows += `<tr class="outrow">
+        <td>${fmtDate(r.d)}</td>
+        <td><b>${fmt(r.pots, 0)}</b></td>
+        <td>${fmt(r.p1, 0)}人×${fmt(r.m1, 0)}分</td>
+        <td>${fmt(r.p2, 0)}人×${fmt(r.m2, 0)}分</td>
+        <td>${fmt(manHr, 1)}</td>
+        <td><b>${fmt(per, 3)}</b></td>
+        <td class="ccol reason" colspan="2">⚠ 統計離群值${o.high ? '（偏高）' : '（偏低）'}：
+          為中位數 ${fmt(o.med, 3)} 的 ${fmt(o.v / o.med * 100, 0)}%，不列入平均</td></tr>`;
+      continue;
+    }
     let vs = '<td class="mut">–</td>';
     if (baseAvg != null) {
       const d = (per - baseAvg) / baseAvg * 100;
@@ -1677,7 +1798,7 @@ function renderDetail(code) {
     <div class="detail-head">
       <div>
         <h2>${code}　${p && p.name ? p.name : ''}</h2>
-        <div class="sub">逐批（場）生產明細與成本分析 · 異常列以紅底標示且不列入平均</div>
+        <div class="sub">逐批（場）生產明細與成本分析 · 紅底＝資料異常、<span style="color:var(--warn);font-weight:600">琥珀底▲＝統計離群值</span>，兩者皆不列入平均</div>
       </div>
       <button class="close no-print" id="det-close">✕ 關閉</button>
     </div>
@@ -1697,7 +1818,8 @@ function renderDetail(code) {
       <div class="full">
         <div class="dchart-title">每鍋人時 · 逐批走勢（點大小 = 鍋數）</div>
         <div class="chart-box" style="height:260px"><canvas id="det-time"></canvas></div>
-        <div class="dchart-note">虛線＝${PERIODS[0].label}平均、實線＝${PERIODS[1].label}平均。點越大代表該場鍋數越多；大點通常落在低處＝批量攤薄效應。</div>
+        <div class="dchart-note">虛線＝${PERIODS[0].label}平均、實線＝${PERIODS[1].label}平均。點越大代表該場鍋數越多；大點通常落在低處＝批量攤薄效應。${
+          outs.length ? `<span style="color:var(--warn);font-weight:600"> ▲琥珀三角＝統計離群值（${outs.length} 場），已排除不影響上方平均線。</span>` : ''}</div>
       </div>
       <div>
         <div class="dchart-title">鍋數 vs 每鍋人時（批量效應）</div>
@@ -1715,6 +1837,7 @@ function renderDetail(code) {
   /* ---- 圖1：逐批走勢（bubble） ---- */
   const maxPots = Math.max(1, ...recs.map(r => r.pots));
   const rOf = pots => 3 + 8 * Math.sqrt(pots / maxPots);
+  const warnC = cssVar('--warn');
   makeChart('det-time', {
     type: 'line',
     data: {
@@ -1722,8 +1845,13 @@ function renderDetail(code) {
       datasets: [{
         data: recs.map(r => (r.personMin / 60) / r.pots),
         borderColor: withAlpha(color, 0.35), backgroundColor: color,
-        pointRadius: recs.map(r => rOf(r.pots)), pointHoverRadius: recs.map(r => rOf(r.pots) + 2),
-        pointBackgroundColor: withAlpha(color, 0.75), pointBorderColor: cssVar('--surface-1'),
+        // 離群點：放大 + 琥珀實心 + 深色外圈，一眼看出「這點被剔除了」
+        pointRadius: recs.map(r => rOf(r.pots) + (r.outlier ? 3 : 0)),
+        pointHoverRadius: recs.map(r => rOf(r.pots) + (r.outlier ? 5 : 2)),
+        pointStyle: recs.map(r => r.outlier ? 'triangle' : 'circle'),
+        pointBackgroundColor: recs.map(r => r.outlier ? warnC : withAlpha(color, 0.75)),
+        pointBorderColor: recs.map(r => r.outlier ? '#7c4a02' : cssVar('--surface-1')),
+        pointBorderWidth: recs.map(r => r.outlier ? 2 : 1),
         borderWidth: 1.5, tension: 0.2,
       }]
     },
@@ -1737,9 +1865,11 @@ function renderDetail(code) {
         ] },
         tooltip: { callbacks: { label: ctx => {
           const r = recs[ctx.dataIndex];
-          return [` 每鍋人時：${fmt(ctx.parsed.y, 3)} 人時/鍋`,
-                  ` 鍋數：${fmt(r.pots, 0)}｜總人時：${fmt(r.personMin / 60, 1)}`,
-                  ` 每鍋成本：$${fmt(ctx.parsed.y * rate, 1)}`];
+          const base = [` 每鍋人時：${fmt(ctx.parsed.y, 3)} 人時/鍋`,
+                        ` 鍋數：${fmt(r.pots, 0)}｜總人時：${fmt(r.personMin / 60, 1)}`,
+                        ` 每鍋成本：$${fmt(ctx.parsed.y * rate, 1)}`];
+          if (r.outlier) base.push(` ⚠ 統計離群值${r.outInfo.high ? '（偏高）' : '（偏低）'}，已排除不計入平均`);
+          return base;
         } } }
       },
       scales: baseScales('人時/鍋'),
@@ -1751,8 +1881,12 @@ function renderDetail(code) {
     type: 'scatter',
     data: { datasets: [{
       data: recs.map(r => ({ x: r.pots, y: (r.personMin / 60) / r.pots })),
-      backgroundColor: withAlpha(color, 0.65), borderColor: cssVar('--surface-1'),
-      pointRadius: 5, pointHoverRadius: 7, borderWidth: 1,
+      backgroundColor: recs.map(r => r.outlier ? warnC : withAlpha(color, 0.65)),
+      borderColor: recs.map(r => r.outlier ? '#7c4a02' : cssVar('--surface-1')),
+      pointStyle: recs.map(r => r.outlier ? 'triangle' : 'circle'),
+      pointRadius: recs.map(r => r.outlier ? 7 : 5),
+      pointHoverRadius: recs.map(r => r.outlier ? 9 : 7),
+      borderWidth: recs.map(r => r.outlier ? 2 : 1),
     }]},
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -1760,7 +1894,9 @@ function renderDetail(code) {
         legend: { display: false },
         tooltip: { callbacks: { label: ctx => {
           const r = recs[ctx.dataIndex];
-          return [` ${fmtDate(r.d)}｜鍋數 ${fmt(r.pots, 0)}`, ` 每鍋人時：${fmt(ctx.parsed.y, 3)}`];
+          const base = [` ${fmtDate(r.d)}｜鍋數 ${fmt(r.pots, 0)}`, ` 每鍋人時：${fmt(ctx.parsed.y, 3)}`];
+          if (r.outlier) base.push(' ⚠ 統計離群值，已排除');
+          return base;
         } } }
       },
       scales: {
@@ -1809,48 +1945,67 @@ function renderAll() {
   renderCards();
 }
 
-/* ================= 匯出人時資料 ================= */
-function exportManpowerData() {
-  const output = [['產品編號', '2025年每鍋人時', '2026年至今每鍋人時']];
-  const now = new Date();
-  const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
-
-  for (const [code, prod] of state.products) {
-    let p2025 = { personMin: 0, pots: 0 };
-    let p2026 = { personMin: 0, pots: 0 };
-
-    // 2025 全年
-    for (let m = 1; m <= 12; m++) {
-      const k = `${code}|2025|${String(m).padStart(2, '0')}`;
-      const a = state.costAgg.get(k);
-      if (a) {
-        p2025.personMin += a.personMin;
-        p2025.pots += a.pots;
-      }
-    }
-
-    // 2026 年至今
-    for (let m = 1; m <= parseInt(currentMonth); m++) {
-      const k = `${code}|2026|${String(m).padStart(2, '0')}`;
-      const a = state.costAgg.get(k);
-      if (a) {
-        p2026.personMin += a.personMin;
-        p2026.pots += a.pots;
-      }
-    }
-
-    const avg2025 = p2025.pots > 0 ? p2025.personMin / 60 / p2025.pots : '';
-    const avg2026 = p2026.pots > 0 ? p2026.personMin / 60 / p2026.pots : '';
-
-    output.push([code, avg2025 ? avg2025.toFixed(4) : '', avg2026 ? avg2026.toFixed(4) : '']);
-  }
-
-  const ws = XLSX.utils.aoa_to_sheet(output);
-  ws['!cols'] = [{wch: 14}, {wch: 18}, {wch: 18}];
+/* ================= 匯出「全品項成本總表」Excel =================
+   三個分頁：成本總表（畫面同款，數值為真數字可直接運算）、
+   離群明細（被剔除的場次）、異常明細（未通過人時核對者）。 */
+function exportCostTable() {
+  if (!state.costRecords.length) { alert('尚無成本資料，請先上傳檔案。'); return; }
+  const rate = currentRate();
+  const PERIODS = costPeriods();
+  const [L0, L1] = PERIODS.map(p => p.label);
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '人時資料');
-  const fname = `人時資料_${new Date().toISOString().slice(0,10)}.xlsx`;
-  XLSX.writeFile(wb, fname);
+
+  /* --- 分頁1：成本總表 --- */
+  const s1 = [[
+    '料號', '品名',
+    `${L0} 每鍋人時`, `${L0} 每鍋成本($)`, `${L0} 批量(鍋/場)`, `${L0} 場次`, `${L0} 總鍋數`,
+    `${L1} 每鍋人時`, `${L1} 每鍋成本($)`, `${L1} 批量(鍋/場)`, `${L1} 場次`, `${L1} 總鍋數`,
+    '每鍋成本變化(%)', '批量差異大',
+  ]];
+  const r4 = v => v == null ? '' : Math.round(v * 10000) / 10000;
+  const r2 = v => v == null ? '' : Math.round(v * 100) / 100;
+  for (const pr of sortedProducts()) {
+    const bls = PERIODS.map(p => costBaseline(pr.code, p));
+    if (bls.every(b => b == null)) continue;
+    const cells = [];
+    for (const b of bls) {
+      if (!b) { cells.push('', '', '', '', ''); continue; }
+      cells.push(r4(b.manHrPerPot), r2(b.manHrPerPot * rate), r2(b.batch), b.sessions, b.pots);
+    }
+    let diff = '', warn = '';
+    if (bls[0] && bls[1]) {
+      diff = r2((bls[1].manHrPerPot - bls[0].manHrPerPot) / bls[0].manHrPerPot * 100);
+      const bd = (bls[0].batch && bls[1].batch) ? (bls[1].batch - bls[0].batch) / bls[0].batch : 0;
+      warn = Math.abs(bd) > 0.3 ? '⚠ 批量差異大' : '';
+    }
+    s1.push([pr.code, pr.name || '', ...cells, diff, warn]);
+  }
+  const ws1 = XLSX.utils.aoa_to_sheet(s1);
+  ws1['!cols'] = [{ wch: 11 }, { wch: 26 }, ...Array(10).fill({ wch: 15 }), { wch: 16 }, { wch: 13 }];
+  ws1['!freeze'] = { xSplit: 2, ySplit: 1 };
+  XLSX.utils.book_append_sheet(wb, ws1, '成本總表');
+
+  /* --- 分頁2：剔除的統計離群值 --- */
+  const s2 = [['日期', '料號', '品名', '鍋數', '每鍋人時', '該品中位數', '偏離中位數(%)', '修正z分數', '該品總場次', '方向']];
+  for (const o of state.costOutliers) {
+    const pr = state.products.get(o.code);
+    s2.push([fmtDate(o.d), o.code, pr && pr.name ? pr.name : '', o.pots,
+             r4(o.v), r4(o.med), r2(o.dev * 100), r2(o.mz), o.n, o.v > o.med ? '偏高' : '偏低']);
+  }
+  const ws2 = XLSX.utils.aoa_to_sheet(s2);
+  ws2['!cols'] = [{ wch: 12 }, { wch: 11 }, { wch: 26 }, ...Array(7).fill({ wch: 14 })];
+  XLSX.utils.book_append_sheet(wb, ws2, '離群明細');
+
+  /* --- 分頁3：未通過核對的異常 --- */
+  const s3 = [['日期', '料號', '品名', '自算人時', '表列人時', '異常原因']];
+  for (const a of state.costAnoms) s3.push([a.date, a.code, a.name || '', a.computed, a.oVal, a.reason]);
+  const ws3 = XLSX.utils.aoa_to_sheet(s3);
+  ws3['!cols'] = [{ wch: 12 }, { wch: 11 }, { wch: 26 }, { wch: 12 }, { wch: 12 }, { wch: 60 }];
+  XLSX.utils.book_append_sheet(wb, ws3, '異常明細');
+
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  XLSX.writeFile(wb, `全品項成本總表_${stamp}.xlsx`);
 }
 </script>
 </body>
