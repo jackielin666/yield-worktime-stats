@@ -361,6 +361,7 @@ table.mtable { border-collapse: collapse; width: 100%; font-size: 12.5px; margin
   <!-- parse summary -->
   <div class="card hidden" id="summary-card">
     <button class="reupload no-print" onclick="resetAll()">重新上傳</button>
+    <button class="reupload no-print" onclick="exportManpowerData()" title="匯出 2025 全年及 2026 年至今的每品項平均每鍋人時資料">匯出人時資料</button>
     <div class="section-title">資料解析摘要</div>
     <div class="summary-grid" id="summary-grid"></div>
     <div class="rules" id="summary-rules"></div>
@@ -1808,6 +1809,49 @@ function renderAll() {
   renderCards();
 }
 
+/* ================= 匯出人時資料 ================= */
+function exportManpowerData() {
+  const output = [['產品編號', '2025年每鍋人時', '2026年至今每鍋人時']];
+  const now = new Date();
+  const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
+
+  for (const [code, prod] of state.products) {
+    let p2025 = { personMin: 0, pots: 0 };
+    let p2026 = { personMin: 0, pots: 0 };
+
+    // 2025 全年
+    for (let m = 1; m <= 12; m++) {
+      const k = `${code}|2025|${String(m).padStart(2, '0')}`;
+      const a = state.costAgg.get(k);
+      if (a) {
+        p2025.personMin += a.personMin;
+        p2025.pots += a.pots;
+      }
+    }
+
+    // 2026 年至今
+    for (let m = 1; m <= parseInt(currentMonth); m++) {
+      const k = `${code}|2026|${String(m).padStart(2, '0')}`;
+      const a = state.costAgg.get(k);
+      if (a) {
+        p2026.personMin += a.personMin;
+        p2026.pots += a.pots;
+      }
+    }
+
+    const avg2025 = p2025.pots > 0 ? p2025.personMin / 60 / p2025.pots : '';
+    const avg2026 = p2026.pots > 0 ? p2026.personMin / 60 / p2026.pots : '';
+
+    output.push([code, avg2025 ? avg2025.toFixed(4) : '', avg2026 ? avg2026.toFixed(4) : '']);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(output);
+  ws['!cols'] = [{wch: 14}, {wch: 18}, {wch: 18}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '人時資料');
+  const fname = `人時資料_${new Date().toISOString().slice(0,10)}.xlsx`;
+  XLSX.writeFile(wb, fname);
+}
 </script>
 </body>
 </html>
